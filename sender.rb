@@ -5,8 +5,9 @@ require 'csv'
 require 'yaml'
 
 CONFIG = YAML.load_file('./secrets/secrets.yml')
+datefile = "./lastdate"
 
-date = Date.today-2
+date = [[Time.at(File.exists?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - 7 + Rational(4, 24)].max, Date.today.to_datetime - 2 + Rational(4, 24)].min
 
 file_date = date.strftime("%Y%m")
 csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
@@ -29,9 +30,9 @@ class Review
     @collection ||= []
   end
 
-  def self.send_reviews_from_date(date)
+  def self.send_reviews_from_date(date, datefile)
     messages = collection.select do |r|
-      r.submitted_at > date && (r.title || r.text)
+      r.submitted_at > date && (r.title || r.text) && r.lang == "en"
     end.sort_by do |r|
       r.submitted_at
     end.map do |r|
@@ -44,12 +45,13 @@ class Review
         text: "#{messages.length} new Play Store #{reviews}!",
         attachments: messages
       })
+      IO.write(datefile, collection.max_by(&:submitted_at).submitted_at.to_time.to_i)
     else
       print "No new reviews\n"
     end
   end
 
-  attr_accessor :text, :title, :submitted_at, :original_submitted_at, :rate, :device, :url, :version, :edited
+  attr_accessor :text, :title, :submitted_at, :original_submitted_at, :rate, :device, :url, :version, :edited, :lang
 
   def initialize data = {}
     @text = data[:text] ? data[:text].to_s.encode("utf-8") : nil
@@ -63,6 +65,7 @@ class Review
     @url = data[:url].to_s.encode("utf-8")
     @version = data[:version] ? "v#{data[:version].to_s.encode("utf-8")}" : nil
     @edited = data[:edited]
+    @lang = data[:lang].to_s.encode("utf-8")
   end
 
   def build_message
@@ -99,7 +102,7 @@ end
 
 CSV.foreach(csv_file_name, encoding: 'bom|utf-16le', headers: true) do |row|
   # If there is no reply - push this review
-  if row[11].nil? and row[2].to_s.encode("utf-8") == "en"
+  if row[11].nil?
     Review.collection << Review.new({
       text: row[10],
       title: row[9],
@@ -115,4 +118,4 @@ CSV.foreach(csv_file_name, encoding: 'bom|utf-16le', headers: true) do |row|
   end
 end
 
-Review.send_reviews_from_date(date)
+Review.send_reviews_from_date(date, datefile)
