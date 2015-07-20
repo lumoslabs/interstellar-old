@@ -7,7 +7,7 @@ require 'yaml'
 CONFIG = YAML.load_file('./secrets/secrets.yml')
 datefile = "./lastdate"
 
-date = [[Time.at(File.exists?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - 7 + Rational(4, 24)].max, Date.today.to_datetime - 2 + Rational(4, 24)].min
+date = [Time.at(File.exists?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - 7 + Rational(4, 24)].max
 
 file_date = date.strftime("%Y%m")
 csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
@@ -26,23 +26,30 @@ class Slack
 end
 
 class Review
+  @@ratings = Array.new(5, 0)
+
   def self.collection
     @collection ||= []
   end
 
   def self.send_reviews_from_date(date, datefile)
     messages = collection.select do |r|
-      r.submitted_at > date && (r.title || r.text) && r.lang == "en"
+      r.submitted_at > date && (@@ratings[r.rate - 1] += 1) && (r.title || r.text) && r.lang == "en"
     end.sort_by do |r|
       r.submitted_at
     end.map do |r|
       r.build_message
     end
 
-    if messages.length > 0
-      reviews = messages.length == 1 ? "review" : "reviews"
+    ratings_sum = @@ratings.reduce(:+)
+    if ratings_sum > 0
       Slack.notify({
-        text: "#{messages.length} new Play Store #{reviews}!",
+        text: [
+          "#{ratings_sum} new Play Store #{ratings_sum == 1 ? 'rating' : 'ratings'}!",
+          @@ratings.map.with_index{ |x, i| "★" * (i + 1) + "☆" * (4 - i) + " #{x}" }.reverse,
+          "#{(@@ratings.map.with_index{ |x, i| x * (i + 1) }.reduce(:+).to_f / ratings_sum).round(3)} average rating\n",
+          "#{messages.length} new Play Store #{messages.length == 1 ? 'review' : 'reviews'}!"
+        ].join("\n"),
         attachments: messages
       })
       IO.write(datefile, collection.max_by(&:submitted_at).submitted_at.to_time.to_i)
@@ -76,7 +83,7 @@ class Review
              "#{submitted_at.strftime("%Y.%m.%d at %H:%M")}"
            end
 
-    stars = rate.times.map{"★"}.join + (5 - rate).times.map{"☆"}.join
+    stars = "★" * rate + "☆" * (5 - rate)
     for_version = version ? "for #{version} " : ""
 
     {
