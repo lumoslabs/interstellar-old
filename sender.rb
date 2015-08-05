@@ -6,14 +6,7 @@ require 'yaml'
 
 CONFIG = YAML.load_file('./secrets/secrets.yml')
 datefile = "./lastdate"
-
-date = [Time.at(File.exists?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - 7 + Rational(4, 24)].max
-
-file_date = date.strftime("%Y%m")
-csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
-
-system "BOTO_PATH=./secrets/.boto gsutil/gsutil cp -r gs://#{CONFIG["app_repo"]}/reviews/#{csv_file_name} ."
-
+default_days_back = 7
 
 class Slack
   def self.notify(message)
@@ -107,22 +100,37 @@ class Review
   end
 end
 
-CSV.foreach(csv_file_name, encoding: 'bom|utf-16le', headers: true) do |row|
-  # If there is no reply - push this review
-  if row[11].nil?
-    Review.collection << Review.new({
-      text: row[10],
-      title: row[9],
-      submitted_at: row[6],
-      edited: (row[4] != row[6]),
-      original_submitted_at: row[4],
-      rate: row[8],
-      device: row[3],
-      url: row[14],
-      version: row[1],
-      lang: row[2]
-    })
+start_date = [Time.at(File.exists?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - default_days_back + Rational(4, 24)].max
+
+csv_file_names = []
+date = start_date
+while date <= Date.today
+  file_date = date.strftime("%Y%m")
+  csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
+  if system "BOTO_PATH=./secrets/.boto gsutil/gsutil cp -r gs://#{CONFIG["app_repo"]}/reviews/#{csv_file_name} ."
+    csv_file_names.push(csv_file_name)
+  end
+  date = date - date.day + 1 >> 1
+end
+
+csv_file_names.each do |csv_file_name|
+  CSV.foreach(csv_file_name, encoding: 'bom|utf-16le', headers: true) do |row|
+    # If there is no reply - push this review
+    if row[11].nil?
+      Review.collection << Review.new({
+        text: row[10],
+        title: row[9],
+        submitted_at: row[6],
+        edited: (row[4] != row[6]),
+        original_submitted_at: row[4],
+        rate: row[8],
+        device: row[3],
+        url: row[14],
+        version: row[1],
+        lang: row[2]
+      })
+    end
   end
 end
 
-Review.send_reviews_from_date(date, datefile)
+Review.send_reviews_from_date(start_date, datefile)
