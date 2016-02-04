@@ -27,7 +27,7 @@ class Review
 
   def self.send_reviews_from_date(date, datefile)
     messages = collection.select do |r|
-      r.submitted_at > date && (@@ratings[r.rate - 1] += 1) && (r.title || r.text) && r.lang == "en"
+      r.submitted_at && r.submitted_at > date && (@@ratings[r.rate - 1] += 1) && (r.title || r.text) && r.lang == "en"
     end.sort_by do |r|
       r.submitted_at
     end.map do |r|
@@ -54,18 +54,23 @@ class Review
   attr_accessor :text, :title, :submitted_at, :original_submitted_at, :rate, :device, :url, :version, :edited, :lang
 
   def initialize data = {}
-    @text = data[:text] ? data[:text].to_s.encode("utf-8") : nil
-    @title = data[:title] ? data[:title].to_s.encode("utf-8") : nil
+    @text = data[:text] ? data[:text] : nil
+    @title = data[:title] ? data[:title] : nil
 
-    @submitted_at = DateTime.parse(data[:submitted_at].encode("utf-8"))
-    @original_submitted_at = DateTime.parse(data[:original_submitted_at].encode("utf-8"))
-
-    @rate = data[:rate].encode("utf-8").to_i
-    @device = data[:device] ? data[:device].to_s.encode("utf-8") : nil
-    @url = data[:url].to_s.encode("utf-8")
-    @version = data[:version] ? "v#{data[:version].to_s.encode("utf-8")}" : nil
+    begin
+      @submitted_at = DateTime.parse(data[:submitted_at])
+    rescue ArgumentError
+    end
+    begin
+      @original_submitted_at = DateTime.parse(data[:original_submitted_at])
+    rescue ArgumentError
+    end
+    @rate = data[:rate].to_i
+    @device = data[:device] ? data[:device] : nil
+    @url = data[:url]
+    @version = data[:version] ? "v#{data[:version]}" : nil
     @edited = data[:edited]
-    @lang = data[:lang].to_s.encode("utf-8")
+    @lang = data[:lang]
   end
 
   def build_message
@@ -114,20 +119,20 @@ while date <= Date.today
 end
 
 csv_file_names.each do |csv_file_name|
-  CSV.foreach(csv_file_name, encoding: 'bom|utf-16le', headers: true) do |row|
+  CSV.foreach(csv_file_name, encoding: 'bom|utf-16le:utf-8', headers: true) do |row|
     # If there is no reply - push this review
-    if row[11].nil?
+    if row['Developer Reply Date and Time'].nil?
       Review.collection << Review.new({
-        text: row[10],
-        title: row[9],
-        submitted_at: row[6],
-        edited: (row[4] != row[6]),
-        original_submitted_at: row[4],
-        rate: row[8],
-        device: row[3],
-        url: row[14],
-        version: row[1],
-        lang: row[2]
+        text: row['Review Text'],
+        title: row['Review Title'],
+        submitted_at: row['Review Last Update Date and Time'],
+        edited: (row['Review Submit Date and Time'] != row['Review Last Update Date and Time']),
+        original_submitted_at: row['Review Submit Date and Time'],
+        rate: row['Star Rating'],
+        device: row['Device'],
+        url: row['Review Link'],
+        version: row['App Version Code'],
+        lang: row['Reviewer Language']
       })
     end
   end
