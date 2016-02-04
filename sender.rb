@@ -112,6 +112,7 @@ date = start_date
 while date <= Date.today
   file_date = date.strftime("%Y%m")
   csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
+  system "gsutil/gsutil update"
   if system "BOTO_PATH=./secrets/.boto gsutil/gsutil cp -r gs://#{CONFIG["app_repo"]}/reviews/#{csv_file_name} ."
     csv_file_names.push(csv_file_name)
   end

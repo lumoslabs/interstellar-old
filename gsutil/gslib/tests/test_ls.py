@@ -154,6 +154,32 @@ class TestLs(testcase.GsUtilIntegrationTestCase):
       self.assertEqual('%s\n' % suri(k1_uri), stdout)
     _Check1()
 
+  def test_subdir_nocontents(self):
+    """Tests listing a bucket subdirectory using -d.
+
+    Result will display subdirectory names instead of contents. Uses a wildcard
+    to show multiple matching subdirectories.
+    """
+    bucket_uri = self.CreateBucket(test_objects=1)
+    k1_uri = bucket_uri.clone_replace_name('foo')
+    k1_uri.set_contents_from_string('baz')
+    k2_uri = bucket_uri.clone_replace_name('dir/foo')
+    k2_uri.set_contents_from_string('bar')
+    k3_uri = bucket_uri.clone_replace_name('dir/foo2')
+    k3_uri.set_contents_from_string('foo')
+    k4_uri = bucket_uri.clone_replace_name('dir2/foo3')
+    k4_uri.set_contents_from_string('foo2')
+    # Use @Retry as hedge against bucket listing eventual consistency.
+    @Retry(AssertionError, tries=3, timeout_secs=1)
+    def _Check1():
+      stdout = self.RunGsUtil(['ls', '-d', '%s/dir*' % suri(bucket_uri)],
+                              return_stdout=True)
+      self.assertEqual('%s/dir/\n%s/dir2/\n' %
+                       (suri(bucket_uri), suri(bucket_uri)), stdout)
+      stdout = self.RunGsUtil(['ls', suri(k1_uri)], return_stdout=True)
+      self.assertEqual('%s\n' % suri(k1_uri), stdout)
+    _Check1()
+
   def test_versioning(self):
     """Tests listing a versioned bucket."""
     bucket1_uri = self.CreateBucket(test_objects=1)
@@ -213,6 +239,79 @@ class TestLs(testcase.GsUtilIntegrationTestCase):
       else:
         self.assertIn('etag=', stdout)
     _Check3()
+
+  @SkipForS3('S3 bucket configuration values are not supported via ls.')
+  def test_location(self):
+    """Tests listing a bucket with location constraint."""
+    bucket_uri = self.CreateBucket()
+    bucket_suri = suri(bucket_uri)
+
+    # No location info
+    stdout = self.RunGsUtil(['ls', '-lb', bucket_suri],
+                            return_stdout=True)
+    self.assertNotIn('Location constraint', stdout)
+
+    # Default location constraint is US
+    stdout = self.RunGsUtil(['ls', '-Lb', bucket_suri],
+                            return_stdout=True)
+    self.assertIn('Location constraint:\t\tUS', stdout)
+
+  @SkipForS3('S3 bucket configuration values are not supported via ls.')
+  def test_logging(self):
+    """Tests listing a bucket with logging config."""
+    bucket_uri = self.CreateBucket()
+    bucket_suri = suri(bucket_uri)
+
+    # No logging info
+    stdout = self.RunGsUtil(['ls', '-lb', bucket_suri],
+                            return_stdout=True)
+    self.assertNotIn('Logging configuration', stdout)
+
+    # Logging configuration is absent by default
+    stdout = self.RunGsUtil(['ls', '-Lb', bucket_suri],
+                            return_stdout=True)
+    self.assertIn('Logging configuration:\t\tNone', stdout)
+
+    # Enable and check
+    self.RunGsUtil(['logging', 'set', 'on', '-b', bucket_suri,
+                    bucket_suri])
+    stdout = self.RunGsUtil(['ls', '-Lb', bucket_suri],
+                            return_stdout=True)
+    self.assertIn('Logging configuration:\t\tPresent', stdout)
+
+    # Disable and check
+    self.RunGsUtil(['logging', 'set', 'off', bucket_suri])
+    stdout = self.RunGsUtil(['ls', '-Lb', bucket_suri],
+                            return_stdout=True)
+    self.assertIn('Logging configuration:\t\tNone', stdout)
+
+  @SkipForS3('S3 bucket configuration values are not supported via ls.')
+  def test_web(self):
+    """Tests listing a bucket with website config."""
+    bucket_uri = self.CreateBucket()
+    bucket_suri = suri(bucket_uri)
+
+    # No website configuration
+    stdout = self.RunGsUtil(['ls', '-lb', bucket_suri],
+                            return_stdout=True)
+    self.assertNotIn('Website configuration', stdout)
+
+    # Website configuration is absent by default
+    stdout = self.RunGsUtil(['ls', '-Lb', bucket_suri],
+                            return_stdout=True)
+    self.assertIn('Website configuration:\t\tNone', stdout)
+
+    # Initialize and check
+    self.RunGsUtil(['web', 'set', '-m', 'google.com', bucket_suri])
+    stdout = self.RunGsUtil(['ls', '-Lb', bucket_suri],
+                            return_stdout=True)
+    self.assertIn('Website configuration:\t\tPresent', stdout)
+
+    # Clear and check
+    self.RunGsUtil(['web', 'set', bucket_suri])
+    stdout = self.RunGsUtil(['ls', '-Lb', bucket_suri],
+                            return_stdout=True)
+    self.assertIn('Website configuration:\t\tNone', stdout)
 
   def test_list_sizes(self):
     """Tests various size listing options."""
@@ -282,7 +381,7 @@ class TestLs(testcase.GsUtilIntegrationTestCase):
                             return_stdout=True)
     self.assertIn(object_name_bytes, stdout)
     if self.default_provider == 'gs':
-      self.assertIn(key_uri.generation, stdout)
+      self.assertIn(str(key_uri.generation), stdout)
       self.assertIn(
           'metageneration=%s' % key_uri.get_key().metageneration, stdout)
       if self.test_api == ApiSelector.XML:
@@ -350,6 +449,30 @@ class TestLs(testcase.GsUtilIntegrationTestCase):
     # Note: The suri function normalizes the URI, so the double slash gets
     # removed.
     self.assertIn(suri(bucket_uri) + '//', stdout)
+
+  def test_wildcard_prefix(self):
+    """Tests that an object name with a wildcard does not infinite loop."""
+    bucket_uri = self.CreateBucket()
+    wildcard_folder_object = 'wildcard*/'
+    object_matching_folder = 'wildcard10/foo'
+    self.CreateObject(bucket_uri=bucket_uri, object_name=wildcard_folder_object,
+                      contents='foo')
+    self.CreateObject(bucket_uri=bucket_uri, object_name=object_matching_folder,
+                      contents='foo')
+    self.AssertNObjectsInBucket(bucket_uri, 2)
+    stderr = self.RunGsUtil(['ls', suri(bucket_uri, 'wildcard*')],
+                            return_stderr=True, expected_status=1)
+    self.assertIn('Cloud folder %s%s contains a wildcard' %
+                  (suri(bucket_uri), '/wildcard*/'), stderr)
+
+    # Listing with a flat wildcard should still succeed.
+    # Use @Retry as hedge against bucket listing eventual consistency.
+    @Retry(AssertionError, tries=3, timeout_secs=1)
+    def _Check():
+      stdout = self.RunGsUtil(['ls', '-l', suri(bucket_uri, '**')],
+                              return_stdout=True)
+      self.assertNumLines(stdout, 3)  # 2 object lines, one summary line.
+    _Check()
 
   @SkipForS3('S3 anonymous access is not supported.')
   def test_get_object_without_list_bucket_permission(self):

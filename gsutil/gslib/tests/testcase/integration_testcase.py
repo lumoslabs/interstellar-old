@@ -17,6 +17,7 @@
 from __future__ import absolute_import
 
 from contextlib import contextmanager
+import cStringIO
 import locale
 import logging
 import os
@@ -27,32 +28,27 @@ import tempfile
 import boto
 from boto.exception import StorageResponseError
 from boto.s3.deletemarker import DeleteMarker
+from boto.storage_uri import BucketStorageUri
+
 import gslib
+from gslib.gcs_json_api import GcsJsonApi
+from gslib.hashing_helper import Base64ToHexHash
 from gslib.project_id import GOOG_PROJ_ID_HDR
 from gslib.project_id import PopulateProjectId
 from gslib.tests.testcase import base
 import gslib.tests.util as util
 from gslib.tests.util import ObjectToURI as suri
 from gslib.tests.util import RUN_S3_TESTS
-from gslib.tests.util import SetBotoConfigFileForTest
 from gslib.tests.util import SetBotoConfigForTest
+from gslib.tests.util import SetEnvironmentForTest
 from gslib.tests.util import unittest
+import gslib.third_party.storage_apitools.storage_v1_messages as apitools_messages
 from gslib.util import IS_WINDOWS
 from gslib.util import Retry
+from gslib.util import UTF8
 
 
 LOGGER = logging.getLogger('integration-test')
-
-# Contents of boto config file that will tell gsutil not to override the real
-# error message with a warning about anonymous access if no credentials are
-# provided in the config file. Also, because we retry 401s, reduce the number
-# of retries so we don't go through a long exponential backoff in tests.
-BOTO_CONFIG_CONTENTS_IGNORE_ANON_WARNING = """
-[Boto]
-num_retries = 2
-[Tests]
-bypass_anonymous_access_warning = True
-"""
 
 
 def SkipForGS(reason):
@@ -69,6 +65,8 @@ def SkipForS3(reason):
     return lambda func: func
 
 
+# TODO: Right now, most tests use the XML API. Instead, they should respect
+# prefer_api in the same way that commands do.
 @unittest.skipUnless(util.RUN_INTEGRATION_TESTS,
                      'Not running integration tests.')
 class GsUtilIntegrationTestCase(base.GsUtilTestCase):
@@ -76,9 +74,9 @@ class GsUtilIntegrationTestCase(base.GsUtilTestCase):
   GROUP_TEST_ADDRESS = 'gs-discussion@googlegroups.com'
   GROUP_TEST_ID = (
       '00b4903a97d097895ab58ef505d535916a712215b79c3e54932c2eb502ad97f5')
-  USER_TEST_ADDRESS = 'gs-team@google.com'
+  USER_TEST_ADDRESS = 'gsutiltestuser@gmail.com'
   USER_TEST_ID = (
-      '00b4903a9703325c6bfc98992d72e75600387a64b3b6bee9ef74613ef8842080')
+      '00b4903a97b201e40d2a5a3ddfe044bb1ab79c75b2e817cbe350297eccc81c84')
   DOMAIN_TEST = 'google.com'
   # No one can create this bucket without owning the gmail.com domain, and we
   # won't create this bucket, so it shouldn't exist.
@@ -94,6 +92,10 @@ class GsUtilIntegrationTestCase(base.GsUtilTestCase):
     # Set up API version and project ID handler.
     self.api_version = boto.config.get_value(
         'GSUtil', 'default_api_version', '1')
+
+    # Instantiate a JSON API for use by the current integration test.
+    self.json_api = GcsJsonApi(BucketStorageUri, logging.getLogger(),
+                               'gs')
 
     if util.RUN_S3_TESTS:
       self.nonexistent_bucket_name = (
@@ -180,7 +182,7 @@ class GsUtilIntegrationTestCase(base.GsUtilTestCase):
     return _Check1()
 
   def CreateBucket(self, bucket_name=None, test_objects=0, storage_class=None,
-                   provider=None):
+                   provider=None, prefer_json_api=False):
     """Creates a test bucket.
 
     The bucket and all of its contents will be deleted after the test.
@@ -192,12 +194,24 @@ class GsUtilIntegrationTestCase(base.GsUtilTestCase):
                     Defaults to 0.
       storage_class: storage class to use. If not provided we us standard.
       provider: Provider to use - either "gs" (the default) or "s3".
+      prefer_json_api: If true, use the JSON creation functions where possible.
 
     Returns:
       StorageUri for the created bucket.
     """
     if not provider:
       provider = self.default_provider
+
+    if prefer_json_api and provider == 'gs':
+      json_bucket = self.CreateBucketJson(bucket_name=bucket_name,
+                                          test_objects=test_objects,
+                                          storage_class=storage_class)
+      bucket_uri = boto.storage_uri(
+          'gs://%s' % json_bucket.name.encode(UTF8).lower(),
+          suppress_consec_slashes=False)
+      self.bucket_uris.append(bucket_uri)
+      return bucket_uri
+
     bucket_name = bucket_name or self.MakeTempName('bucket')
 
     bucket_uri = boto.storage_uri('%s://%s' % (provider, bucket_name.lower()),
@@ -244,7 +258,8 @@ class GsUtilIntegrationTestCase(base.GsUtilTestCase):
     bucket_uri.configure_versioning(True)
     return bucket_uri
 
-  def CreateObject(self, bucket_uri=None, object_name=None, contents=None):
+  def CreateObject(self, bucket_uri=None, object_name=None, contents=None,
+                   prefer_json_api=False):
     """Creates a test object.
 
     Args:
@@ -255,16 +270,95 @@ class GsUtilIntegrationTestCase(base.GsUtilTestCase):
       contents: The contents to write to the object. If not specified, the key
                 is not written to, which means that it isn't actually created
                 yet on the server.
+      prefer_json_api: If true, use the JSON creation functions where possible.
 
     Returns:
       A StorageUri for the created object.
     """
+    bucket_uri = bucket_uri or self.CreateBucket()
+
+    if prefer_json_api and bucket_uri.scheme == 'gs' and contents:
+      object_name = object_name or self.MakeTempName('obj')
+      json_object = self.CreateObjectJson(contents=contents,
+                                          bucket_name=bucket_uri.bucket_name,
+                                          object_name=object_name)
+      object_uri = bucket_uri.clone_replace_name(object_name)
+      # pylint: disable=protected-access
+      # Need to update the StorageUri with the correct values while
+      # avoiding creating a versioned string.
+      object_uri._update_from_values(None,
+                                     json_object.generation,
+                                     True,
+                                     md5=(Base64ToHexHash(json_object.md5Hash),
+                                          json_object.md5Hash.strip('\n"\'')))
+      # pylint: enable=protected-access
+      return object_uri
+
     bucket_uri = bucket_uri or self.CreateBucket()
     object_name = object_name or self.MakeTempName('obj')
     key_uri = bucket_uri.clone_replace_name(object_name)
     if contents is not None:
       key_uri.set_contents_from_string(contents)
     return key_uri
+
+  def CreateBucketJson(self, bucket_name=None, test_objects=0,
+                       storage_class=None):
+    """Creates a test bucket using the JSON API.
+
+    The bucket and all of its contents will be deleted after the test.
+
+    Args:
+      bucket_name: Create the bucket with this name. If not provided, a
+                   temporary test bucket name is constructed.
+      test_objects: The number of objects that should be placed in the bucket.
+                    Defaults to 0.
+      storage_class: storage class to use. If not provided we us standard.
+
+    Returns:
+      Apitools Bucket for the created bucket.
+    """
+    bucket_name = bucket_name or self.MakeTempName('bucket')
+    bucket_metadata = None
+    if storage_class:
+      bucket_metadata = apitools_messages.Bucket(
+          name=bucket_name.lower(),
+          storageClass=storage_class)
+
+    # TODO: Add retry and exponential backoff.
+    bucket = self.json_api.CreateBucket(bucket_name.lower(),
+                                        metadata=bucket_metadata)
+    # Add bucket to list of buckets to be cleaned up.
+    # TODO: Clean up JSON buckets using JSON API.
+    self.bucket_uris.append(
+        boto.storage_uri('gs://%s' % (bucket_name.lower()),
+                         suppress_consec_slashes=False))
+    for i in range(test_objects):
+      self.CreateObjectJson(bucket_name=bucket_name,
+                            object_name=self.MakeTempName('obj'),
+                            contents='test %d' % i)
+    return bucket
+
+  def CreateObjectJson(self, contents, bucket_name=None, object_name=None):
+    """Creates a test object (GCS provider only) using the JSON API.
+
+    Args:
+      contents: The contents to write to the object.
+      bucket_name: Name of bucket to place the object in. If not
+                   specified, a new temporary bucket is created.
+      object_name: The name to use for the object. If not specified, a temporary
+                   test object name is constructed.
+
+    Returns:
+      An apitools Object for the created object.
+    """
+    bucket_name = bucket_name or self.CreateBucketJson().name
+    object_name = object_name or self.MakeTempName('obj')
+    object_metadata = apitools_messages.Object(
+        name=object_name,
+        bucket=bucket_name,
+        contentType='application/octet-stream')
+    return self.json_api.UploadObject(cStringIO.StringIO(contents),
+                                      object_metadata, provider='gs')
 
   def RunGsUtil(self, cmd, return_status=False, return_stdout=False,
                 return_stderr=False, expected_status=0, stdin=None):
@@ -284,7 +378,9 @@ class GsUtilIntegrationTestCase(base.GsUtilTestCase):
       A tuple containing the desired return values specified by the return_*
       arguments.
     """
-    cmd = [gslib.GSUTIL_PATH] + ['--testexceptiontraces'] + cmd
+    cmd = ([gslib.GSUTIL_PATH] + ['--testexceptiontraces'] +
+           ['-o', 'GSUtil:default_project_id=' + PopulateProjectId()] +
+           cmd)
     if IS_WINDOWS:
       cmd = [sys.executable] + cmd
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -355,7 +451,28 @@ class GsUtilIntegrationTestCase(base.GsUtilTestCase):
 
   @contextmanager
   def SetAnonymousBotoCreds(self):
-    boto_config_path = self.CreateTempFile(
-        contents=BOTO_CONFIG_CONTENTS_IGNORE_ANON_WARNING)
-    with SetBotoConfigFileForTest(boto_config_path):
-      yield
+    # Tell gsutil not to override the real error message with a warning about
+    # anonymous access if no credentials are provided in the config file.
+    boto_config_for_test = [
+        ('Tests', 'bypass_anonymous_access_warning', 'True')]
+
+    # Also, maintain any custom host/port/API configuration, since we'll need
+    # to contact the same host when operating in a development environment.
+    for creds_config_key in (
+        'gs_host', 'gs_json_host', 'gs_post', 'gs_json_port'):
+      boto_config_for_test.append(
+          ('Credentials', creds_config_key,
+           boto.config.get('Credentials', creds_config_key, None)))
+    boto_config_for_test.append(
+        ('Boto', 'https_validate_certificates',
+         boto.config.get('Boto', 'https_validate_certificates', None)))
+    for api_config_key in ('json_api_version', 'prefer_api'):
+      boto_config_for_test.append(
+          ('GSUtil', api_config_key,
+           boto.config.get('GSUtil', api_config_key, None)))
+
+    with SetBotoConfigForTest(boto_config_for_test, use_existing_config=False):
+      # Make sure to reset Developer Shell credential port so that the child
+      # gsutil process is really anonymous.
+      with SetEnvironmentForTest({'DEVSHELL_CLIENT_PORT': None}):
+        yield

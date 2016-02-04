@@ -20,7 +20,7 @@ import os
 
 import gslib.tests.testcase as testcase
 from gslib.tests.util import ObjectToURI as suri
-from gslib.tests.util import PerformsFileToObjectUpload
+from gslib.tests.util import SequentialAndParallelTransfer
 from gslib.util import Retry
 
 
@@ -39,7 +39,10 @@ class TestMv(testcase.GsUtilIntegrationTestCase):
             for key in bucket1_uri.list_bucket()]
     cmd = (['-m', 'mv'] + objs + [suri(bucket2_uri)])
     stderr = self.RunGsUtil(cmd, return_stderr=True)
-    self.assertEqual(stderr.count('Copying'), 2)
+    # Rewrite API may output an additional 'Copying' progress notification.
+    self.assertGreaterEqual(stderr.count('Copying'), 2)
+    self.assertLessEqual(stderr.count('Copying'), 4)
+    self.assertEqual(stderr.count('Copying') % 2, 0)
     self.assertEqual(stderr.count('Removing'), 2)
 
     self.AssertNObjectsInBucket(bucket1_uri, 0)
@@ -59,7 +62,9 @@ class TestMv(testcase.GsUtilIntegrationTestCase):
             for key in bucket2_uri.list_bucket()]
     cmd = (['-m', 'mv'] + objs + [suri(bucket1_uri)])
     stderr = self.RunGsUtil(cmd, return_stderr=True)
-    self.assertEqual(stderr.count('Copying'), 1)
+    # Rewrite API may output an additional 'Copying' progress notification.
+    self.assertGreaterEqual(stderr.count('Copying'), 1)
+    self.assertLessEqual(stderr.count('Copying'), 2)
     self.assertEqual(stderr.count('Removing'), 1)
 
     self.AssertNObjectsInBucket(bucket1_uri, 1)
@@ -72,7 +77,7 @@ class TestMv(testcase.GsUtilIntegrationTestCase):
     self.RunGsUtil(['mv', dir_to_move, suri(bucket_uri)])
     self.AssertNObjectsInBucket(bucket_uri, 2)
 
-  @PerformsFileToObjectUpload
+  @SequentialAndParallelTransfer
   def test_stdin_args(self):
     """Tests mv with the -I option."""
     tmpdir = self.CreateTempDir()

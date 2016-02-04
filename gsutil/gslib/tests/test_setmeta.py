@@ -47,7 +47,7 @@ class TestSetMeta(testcase.GsUtilIntegrationTestCase):
     inpath = self.CreateTempFile()
     self.RunGsUtil(['-h', 'x-%s-meta-xyz:abc' % self.provider_custom_meta,
                     '-h', 'Content-Type:image/gif', 'cp', inpath, objuri])
-    self.RunGsUtil(['setmeta', '-n', '-h', 'Content-Type:text/html', '-h',
+    self.RunGsUtil(['setmeta', '-h', 'Content-Type:text/html', '-h',
                     'x-%s-meta-xyz' % self.provider_custom_meta, objuri])
     # Use @Retry as hedge against bucket listing eventual consistency.
     @Retry(AssertionError, tries=3, timeout_secs=1)
@@ -56,6 +56,46 @@ class TestSetMeta(testcase.GsUtilIntegrationTestCase):
       self.assertRegexpMatches(stdout, r'Content-Type:\s+text/html')
       self.assertNotIn('xyz', stdout)
     _Check1()
+
+  @SkipForS3('Preconditions not supported for s3 objects')
+  def test_generation_precondition(self):
+    """Tests setting metadata with a generation precondition."""
+    object_uri = self.CreateObject(contents='foo')
+    generation = object_uri.generation
+    ct = 'image/gif'
+    stderr = self.RunGsUtil(
+        ['-h', 'x-goog-if-generation-match:%d' % (long(generation) + 1),
+         'setmeta', '-h', 'x-%s-meta-xyz:abc' % self.provider_custom_meta,
+         '-h', 'Content-Type:%s' % ct, suri(object_uri)], expected_status=1,
+        return_stderr=True)
+    self.assertIn('Precondition', stderr)
+
+    self.RunGsUtil(
+        ['-h', 'x-goog-generation-match:%s' % generation, 'setmeta', '-h',
+         'x-%s-meta-xyz:abc' % self.provider_custom_meta,
+         '-h', 'Content-Type:%s' % ct, suri(object_uri)])
+    stdout = self.RunGsUtil(['ls', '-L', suri(object_uri)], return_stdout=True)
+    self.assertRegexpMatches(stdout, r'Content-Type:\s+%s' % ct)
+    self.assertRegexpMatches(stdout, r'xyz:\s+abc')
+
+  @SkipForS3('Preconditions not supported for s3 objects')
+  def test_metageneration_precondition(self):
+    """Tests setting metadata with a metageneration precondition."""
+    object_uri = self.CreateObject(contents='foo')
+    ct = 'image/gif'
+    stderr = self.RunGsUtil(
+        ['-h', 'x-goog-if-metageneration-match:5', 'setmeta', '-h',
+         'x-%s-meta-xyz:abc' % self.provider_custom_meta,
+         '-h', 'Content-Type:%s' % ct, suri(object_uri)], expected_status=1,
+        return_stderr=True)
+    self.assertIn('Precondition', stderr)
+    self.RunGsUtil(
+        ['-h', 'x-goog-metageneration-match:1', 'setmeta', '-h',
+         'x-%s-meta-xyz:abc' % self.provider_custom_meta,
+         '-h', 'Content-Type:%s' % ct, suri(object_uri)])
+    stdout = self.RunGsUtil(['ls', '-L', suri(object_uri)], return_stdout=True)
+    self.assertRegexpMatches(stdout, r'Content-Type:\s+%s' % ct)
+    self.assertRegexpMatches(stdout, r'xyz:\s+abc')
 
   def test_duplicate_header_removal(self):
     stderr = self.RunGsUtil(

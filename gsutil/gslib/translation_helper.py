@@ -22,6 +22,7 @@ import re
 import textwrap
 import xml.etree.ElementTree
 
+from apitools.base.py import encoding
 import boto
 from boto.gs.acl import ACL
 from boto.gs.acl import ALL_AUTHENTICATED_USERS
@@ -35,10 +36,10 @@ from boto.gs.acl import USER_BY_EMAIL
 from boto.gs.acl import USER_BY_ID
 
 from gslib.cloud_api import ArgumentException
+from gslib.cloud_api import BucketNotFoundException
 from gslib.cloud_api import NotFoundException
 from gslib.cloud_api import Preconditions
 from gslib.exception import CommandException
-from gslib.third_party.storage_apitools import encoding as encoding
 from gslib.third_party.storage_apitools import storage_v1_messages as apitools_messages
 
 # In Python 2.6, ElementTree raises ExpatError instead of ParseError.
@@ -74,7 +75,7 @@ DEFAULT_CONTENT_TYPE = 'application/octet-stream'
 
 # Because CORS is just a list in apitools, we need special handling or blank
 # CORS lists will get sent with other configuration commands such as lifecycle,
-# commands, which would cause CORS configuration to be unintentionally removed.
+# which would cause CORS configuration to be unintentionally removed.
 # Protorpc defaults list values to an empty list, and won't allow us to set the
 # value to None like other configuration fields, so there is no way to
 # distinguish the default value from when we actually want to remove the CORS
@@ -84,6 +85,14 @@ DEFAULT_CONTENT_TYPE = 'application/octet-stream'
 # A value of REMOVE_CORS_CONFIG means remove the CORS configuration.
 REMOVE_CORS_CONFIG = [apitools_messages.Bucket.CorsValueListEntry(
     maxAgeSeconds=-1, method=['REMOVE_CORS_CONFIG'])]
+
+# Similar to CORS above, we need a sentinel value allowing us to specify
+# when a default object ACL should be private (containing no entries).
+# A defaultObjectAcl value of [] means don't modify the default object ACL.
+# A value of [PRIVATE_DEFAULT_OBJ_ACL] means create an empty/private default
+# object ACL.
+PRIVATE_DEFAULT_OBJ_ACL = apitools_messages.ObjectAccessControl(
+    id='PRIVATE_DEFAULT_OBJ_ACL')
 
 
 def ObjectMetadataFromHeaders(headers):
@@ -312,9 +321,44 @@ def PreconditionsFromHeaders(headers):
   return return_preconditions
 
 
+def CreateNotFoundExceptionForObjectWrite(
+    dst_provider, dst_bucket_name, src_provider=None,
+    src_bucket_name=None, src_object_name=None, src_generation=None):
+  """Creates a NotFoundException for an object upload or copy.
+
+  This is necessary because 404s don't necessarily specify which resource
+  does not exist.
+
+  Args:
+    dst_provider: String abbreviation of destination provider, e.g., 'gs'.
+    dst_bucket_name: Destination bucket name for the write operation.
+    src_provider: String abbreviation of source provider, i.e. 'gs', if any.
+    src_bucket_name: Source bucket name, if any (for the copy case).
+    src_object_name: Source object name, if any (for the copy case).
+    src_generation: Source object generation, if any (for the copy case).
+
+  Returns:
+    NotFoundException with appropriate message.
+  """
+  dst_url_string = '%s://%s' % (dst_provider, dst_bucket_name)
+  if src_bucket_name and src_object_name:
+    src_url_string = '%s://%s/%s' % (src_provider, src_bucket_name,
+                                     src_object_name)
+    if src_generation:
+      src_url_string += '#%s' % str(src_generation)
+    return NotFoundException(
+        'The source object %s or the destination bucket %s does not exist.' %
+        (src_url_string, dst_url_string))
+
+  return NotFoundException(
+      'The destination bucket %s does not exist or the write to the '
+      'destination must be restarted' % dst_url_string)
+
+
 def CreateBucketNotFoundException(code, provider, bucket_name):
-  return NotFoundException('%s://%s bucket does not exist.' %
-                           (provider, bucket_name), status=code)
+  return BucketNotFoundException('%s://%s bucket does not exist.' %
+                                 (provider, bucket_name), bucket_name,
+                                 status=code)
 
 
 def CreateObjectNotFoundException(code, provider, bucket_name, object_name,
@@ -467,6 +511,12 @@ class LifecycleTranslation(object):
     """Translates lifecycle JSON to an apitools message."""
     try:
       deserialized_lifecycle = json.loads(json_txt)
+      # If lifecycle JSON is the in the following format
+      # {'lifecycle': {'rule': ... then strip out the 'lifecycle' key
+      # and reduce it to the following format
+      # {'rule': ...
+      if 'lifecycle' in deserialized_lifecycle:
+        deserialized_lifecycle = deserialized_lifecycle['lifecycle']
       lifecycle = encoding.DictToMessage(
           deserialized_lifecycle, apitools_messages.Bucket.LifecycleValue)
       return lifecycle
@@ -632,6 +682,10 @@ class AclTranslation(object):
   def BotoAclFromMessage(cls, acl_message):
     acl_dicts = []
     for message in acl_message:
+      if message == PRIVATE_DEFAULT_OBJ_ACL:
+        # Sentinel value indicating acl_dicts should be an empty list to create
+        # a private (no entries) default object ACL.
+        break
       acl_dicts.append(encoding.MessageToDict(message))
     return cls.BotoAclFromJson(acl_dicts)
 
@@ -678,6 +732,9 @@ class AclTranslation(object):
       return Entry(type=ALL_USERS, permission=permission)
     elif entity.lower() == ALL_AUTHENTICATED_USERS.lower():
       return Entry(type=ALL_AUTHENTICATED_USERS, permission=permission)
+    elif entity.startswith('project'):
+      raise CommandException('XML API does not support project scopes, '
+                             'cannot translate ACL.')
     elif 'email' in entry_json:
       if entity.startswith('user'):
         scope_type = USER_BY_EMAIL
@@ -697,10 +754,6 @@ class AclTranslation(object):
         scope_type = GROUP_BY_DOMAIN
       return Entry(type=scope_type, domain=entry_json['domain'],
                    permission=permission)
-    elif 'project' in entry_json:
-      if entity.startswith('project'):
-        raise CommandException('XML API does not support project scopes, '
-                               'cannot translate ACL.')
     raise CommandException('Failed to translate JSON ACL to XML.')
 
   @classmethod
@@ -784,4 +837,3 @@ class AclTranslation(object):
         serializable_acl.append(encoding.MessageToDict(acl_entry))
     return json.dumps(serializable_acl, sort_keys=True,
                       indent=2, separators=(',', ': '))
-

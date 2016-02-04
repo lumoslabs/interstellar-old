@@ -19,16 +19,17 @@ from __future__ import absolute_import
 import copy
 import cStringIO
 import httplib
+import logging
 import socket
 import types
 import urlparse
 
+from apitools.base.py import exceptions as apitools_exceptions
 import httplib2
 from httplib2 import parse_uri
 
 from gslib.cloud_api import BadRequestException
 from gslib.progress_callback import ProgressCallbackWithBackoff
-from gslib.third_party.storage_apitools import exceptions as apitools_exceptions
 from gslib.util import SSL_TIMEOUT
 from gslib.util import TRANSFER_BUFFER_SIZE
 
@@ -382,6 +383,64 @@ def WrapDownloadHttpRequest(download_http):
   return download_http
 
 
+class HttpWithNoRetries(httplib2.Http):
+  """httplib2.Http variant that does not retry.
+
+  httplib2 automatically retries requests according to httplib2.RETRIES, but
+  in certain cases httplib2 ignores the RETRIES value and forces a retry.
+  Because httplib2 does not handle the case where the underlying request body
+  is a stream, a retry may cause a non-idempotent write as the stream is
+  partially consumed and not reset before the retry occurs.
+
+  Here we override _conn_request to disable retries unequivocally, so that
+  uploads may be retried at higher layers that properly handle stream request
+  bodies.
+  """
+
+  def _conn_request(self, conn, request_uri, method, body, headers):  # pylint: disable=too-many-statements
+
+    try:
+      if hasattr(conn, 'sock') and conn.sock is None:
+        conn.connect()
+      conn.request(method, request_uri, body, headers)
+    except socket.timeout:
+      raise
+    except socket.gaierror:
+      conn.close()
+      raise httplib2.ServerNotFoundError(
+          'Unable to find the server at %s' % conn.host)
+    except httplib2.ssl_SSLError:
+      conn.close()
+      raise
+    except socket.error, e:
+      err = 0
+      if hasattr(e, 'args'):
+        err = getattr(e, 'args')[0]
+      else:
+        err = e.errno
+      if err == httplib2.errno.ECONNREFUSED:  # Connection refused
+        raise
+    except httplib.HTTPException:
+      conn.close()
+      raise
+    try:
+      response = conn.getresponse()
+    except (socket.error, httplib.HTTPException):
+      conn.close()
+      raise
+    else:
+      content = ''
+      if method == 'HEAD':
+        conn.close()
+      else:
+        content = response.read()
+      response = httplib2.Response(response)
+      if method != 'HEAD':
+        # pylint: disable=protected-access
+        content = httplib2._decompressContent(response, content)
+    return (response, content)
+
+
 class HttpWithDownloadStream(httplib2.Http):
   """httplib2.Http variant that only pushes bytes through a stream.
 
@@ -390,107 +449,99 @@ class HttpWithDownloadStream(httplib2.Http):
   multi-threaded/multi-process copy. This class copies and then overrides some
   httplib2 functions to use a streaming copy approach that uses small memory
   buffers.
+
+  Also disables httplib2 retries (for reasons stated in the HttpWithNoRetries
+  class doc).
   """
 
-  def __init__(self, stream=None, *args, **kwds):
-    if stream is None:
-      raise apitools_exceptions.InvalidUserInputError(
-          'Cannot create HttpWithDownloadStream with no stream')
-    self._stream = stream
+  def __init__(self, *args, **kwds):
+    self._stream = None
+    self._logger = logging.getLogger()
     super(HttpWithDownloadStream, self).__init__(*args, **kwds)
 
   @property
   def stream(self):
     return self._stream
 
+  @stream.setter
+  def stream(self, value):
+    self._stream = value
+
   # pylint: disable=too-many-statements
   def _conn_request(self, conn, request_uri, method, body, headers):
-    i = 0
-    seen_bad_status_line = False
-    while i < httplib2.RETRIES:
-      i += 1
-      try:
-        if hasattr(conn, 'sock') and conn.sock is None:
-          conn.connect()
-        conn.request(method, request_uri, body, headers)
-      except socket.timeout:
-        raise
-      except socket.gaierror:
-        conn.close()
-        raise httplib2.ServerNotFoundError(
-            'Unable to find the server at %s' % conn.host)
-      except httplib2.ssl_SSLError:
-        conn.close()
-        raise
-      except socket.error, e:
-        err = 0
-        if hasattr(e, 'args'):
-          err = getattr(e, 'args')[0]
-        else:
-          err = e.errno
-        if err == httplib2.errno.ECONNREFUSED:  # Connection refused
-          raise
-      except httplib.HTTPException:
-        # Just because the server closed the connection doesn't apparently mean
-        # that the server didn't send a response.
-        if hasattr(conn, 'sock') and conn.sock is None:
-          if i < httplib2.RETRIES-1:
-            conn.close()
-            conn.connect()
-            continue
-          else:
-            conn.close()
-            raise
-        if i < httplib2.RETRIES-1:
-          conn.close()
-          conn.connect()
-          continue
-      try:
-        response = conn.getresponse()
-      except httplib.BadStatusLine:
-        # If we get a BadStatusLine on the first try then that means
-        # the connection just went stale, so retry regardless of the
-        # number of RETRIES set.
-        if not seen_bad_status_line and i == 1:
-          i = 0
-          seen_bad_status_line = True
-          conn.close()
-          conn.connect()
-          continue
-        else:
-          conn.close()
-          raise
-      except (socket.error, httplib.HTTPException):
-        if i < httplib2.RETRIES-1:
-          conn.close()
-          conn.connect()
-          continue
-        else:
-          conn.close()
-          raise
+    try:
+      if hasattr(conn, 'sock') and conn.sock is None:
+        conn.connect()
+      conn.request(method, request_uri, body, headers)
+    except socket.timeout:
+      raise
+    except socket.gaierror:
+      conn.close()
+      raise httplib2.ServerNotFoundError(
+          'Unable to find the server at %s' % conn.host)
+    except httplib2.ssl_SSLError:
+      conn.close()
+      raise
+    except socket.error, e:
+      err = 0
+      if hasattr(e, 'args'):
+        err = getattr(e, 'args')[0]
       else:
-        content = ''
-        if method == 'HEAD':
-          conn.close()
-          response = httplib2.Response(response)
-        else:
-          if response.status in (httplib.OK, httplib.PARTIAL_CONTENT):
-            http_stream = response
-            # Start last_position and new_position at dummy values
-            last_position = -1
-            new_position = 0
-            while new_position != last_position:
-              last_position = new_position
-              new_data = http_stream.read(TRANSFER_BUFFER_SIZE)
-              self.stream.write(new_data)
-              new_position += len(new_data)
-            response = httplib2.Response(response)
+        err = e.errno
+      if err == httplib2.errno.ECONNREFUSED:  # Connection refused
+        raise
+    except httplib.HTTPException:
+      # Just because the server closed the connection doesn't apparently mean
+      # that the server didn't send a response.
+      conn.close()
+      raise
+    try:
+      response = conn.getresponse()
+    except (socket.error, httplib.HTTPException):
+      conn.close()
+      raise
+    else:
+      content = ''
+      if method == 'HEAD':
+        conn.close()
+        response = httplib2.Response(response)
+      elif method == 'GET' and response.status in (httplib.OK,
+                                                   httplib.PARTIAL_CONTENT):
+        content_length = None
+        if hasattr(response, 'msg'):
+          content_length = response.getheader('content-length')
+        http_stream = response
+        bytes_read = 0
+        while True:
+          new_data = http_stream.read(TRANSFER_BUFFER_SIZE)
+          if new_data:
+            if self.stream is None:
+              raise apitools_exceptions.InvalidUserInputError(
+                  'Cannot exercise HttpWithDownloadStream with no stream')
+            self.stream.write(new_data)
+            bytes_read += len(new_data)
           else:
-            # We fall back to the current httplib2 behavior if we're
-            # not processing bytes (eg it's a redirect).
-            content = response.read()
-            response = httplib2.Response(response)
-            # pylint: disable=protected-access
-            content = httplib2._decompressContent(response, content)
-      break
+            break
+
+        if (content_length is not None and
+            long(bytes_read) != long(content_length)):
+          # The input stream terminated before we were able to read the
+          # entire contents, possibly due to a network condition. Set
+          # content-length to indicate how many bytes we actually read.
+          self._logger.log(
+              logging.DEBUG, 'Only got %s bytes out of content-length %s '
+              'for request URI %s. Resetting content-length to match '
+              'bytes read.', bytes_read, content_length, request_uri)
+          response.msg['content-length'] = str(bytes_read)
+        response = httplib2.Response(response)
+      else:
+        # We fall back to the current httplib2 behavior if we're
+        # not processing download bytes, e.g., it's a redirect, an
+        # oauth2client POST to refresh an access token, or any HTTP
+        # status code that doesn't include object content.
+        content = response.read()
+        response = httplib2.Response(response)
+        # pylint: disable=protected-access
+        content = httplib2._decompressContent(response, content)
     return (response, content)
+  # pylint: enable=too-many-statements

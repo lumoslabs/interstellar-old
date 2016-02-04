@@ -41,7 +41,7 @@ class CloudApiDelegator(CloudApi):
   """
 
   def __init__(self, bucket_storage_uri_class, gsutil_api_map, logger,
-               provider=None, debug=0):
+               provider=None, debug=0, trace_token=None, perf_trace_token=None):
     """Performs necessary setup for delegating cloud storage requests.
 
     This function has different arguments than the gsutil Cloud API __init__
@@ -56,9 +56,13 @@ class CloudApiDelegator(CloudApi):
       provider: Default provider prefix describing cloud storage provider to
                 connect to.
       debug: Debug level for the API implementation (0..3).
+      trace_token: Apiary trace token to pass to API.
+      perf_trace_token: Performance trace token to use when making API calls.
     """
     super(CloudApiDelegator, self).__init__(bucket_storage_uri_class, logger,
-                                            provider=provider, debug=debug)
+                                            provider=provider, debug=debug,
+                                            trace_token=trace_token,
+                                            perf_trace_token=perf_trace_token)
     self.api_map = gsutil_api_map
     self.prefer_api = boto.config.get('GSUtil', 'prefer_api', '').upper()
     self.loaded_apis = {}
@@ -116,7 +120,9 @@ class CloudApiDelegator(CloudApi):
             self.bucket_storage_uri_class,
             self.logger,
             provider=provider,
-            debug=self.debug))
+            debug=self.debug,
+            trace_token=self.trace_token,
+            perf_trace_token=self.perf_trace_token))
 
   def GetApiSelector(self, provider=None):
     """Returns a cs_api_map.ApiSelector based on input and configuration.
@@ -247,13 +253,14 @@ class CloudApiDelegator(CloudApi):
         serialization_data=serialization_data,
         tracker_callback=tracker_callback, progress_callback=progress_callback)
 
-  def CopyObject(self, src_bucket_name, src_obj_name, dst_obj_metadata,
-                 src_generation=None, canned_acl=None, preconditions=None,
-                 provider=None, fields=None):
+  def CopyObject(self, src_obj_metadata, dst_obj_metadata, src_generation=None,
+                 canned_acl=None, preconditions=None, progress_callback=None,
+                 max_bytes_per_call=None, provider=None, fields=None):
     return self._GetApi(provider).CopyObject(
-        src_bucket_name, src_obj_name, dst_obj_metadata,
-        src_generation=src_generation, canned_acl=canned_acl,
-        preconditions=preconditions, fields=fields)
+        src_obj_metadata, dst_obj_metadata, src_generation=src_generation,
+        canned_acl=canned_acl, preconditions=preconditions,
+        progress_callback=progress_callback,
+        max_bytes_per_call=max_bytes_per_call, fields=fields)
 
   def ComposeObject(self, src_objs_metadata, dst_obj_metadata,
                     preconditions=None, provider=None, fields=None):

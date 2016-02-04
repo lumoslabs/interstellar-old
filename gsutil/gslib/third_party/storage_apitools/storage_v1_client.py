@@ -14,10 +14,12 @@
 """Generated client library for storage version v1."""
 
 import os
+import platform
 import sys
 
+from apitools.base.py import base_api
+
 import gslib
-from gslib.third_party.storage_apitools import base_api
 from gslib.third_party.storage_apitools import storage_v1_messages as messages
 
 
@@ -31,7 +33,8 @@ class StorageV1(base_api.BaseApiClient):
   _VERSION = u'v1'
   _CLIENT_ID = 'nomatter'
   _CLIENT_SECRET = 'nomatter'
-  _USER_AGENT = 'apitools gsutil/%s (%s)' % (gslib.VERSION, sys.platform)
+  _USER_AGENT = 'apitools gsutil/%s Python/%s (%s)' % (
+      gslib.VERSION, platform.python_version(), sys.platform)
   if os.environ.get('CLOUDSDK_WRAPPER') == '1':
     _USER_AGENT += ' Cloud SDK Command Line Tool'
     if os.environ.get('CLOUDSDK_VERSION'):
@@ -43,7 +46,7 @@ class StorageV1(base_api.BaseApiClient):
                get_credentials=True, http=None, model=None,
                log_request=False, log_response=False,
                credentials_args=None, default_global_params=None,
-               version=_VERSION):
+               version=_VERSION, additional_http_headers=None):
     """Create a new storage handle."""
     url = url or u'https://www.googleapis.com/storage/v1/'
     super(StorageV1, self).__init__(
@@ -51,7 +54,8 @@ class StorageV1(base_api.BaseApiClient):
         get_credentials=get_credentials, http=http, model=model,
         log_request=log_request, log_response=log_response,
         credentials_args=credentials_args,
-        default_global_params=default_global_params)
+        default_global_params=default_global_params,
+        additional_http_headers=additional_http_headers)
     self._version = version
     self.bucketAccessControls = self.BucketAccessControlsService(self)
     self.buckets = self.BucketsService(self)
@@ -60,8 +64,11 @@ class StorageV1(base_api.BaseApiClient):
     self.objectAccessControls = self.ObjectAccessControlsService(self)
     self.objects = self.ObjectsService(self)
 
+
   class BucketAccessControlsService(base_api.BaseApiService):
     """Service class for the bucketAccessControls resource."""
+
+    _NAME = u'bucketAccessControls'
 
     def __init__(self, client):
       super(StorageV1.BucketAccessControlsService, self).__init__(client)
@@ -224,6 +231,8 @@ class StorageV1(base_api.BaseApiClient):
   class BucketsService(base_api.BaseApiService):
     """Service class for the buckets resource."""
 
+    _NAME = u'buckets'
+
     def __init__(self, client):
       super(StorageV1.BucketsService, self).__init__(client)
       self._method_configs = {
@@ -268,7 +277,7 @@ class StorageV1(base_api.BaseApiClient):
               method_id=u'storage.buckets.list',
               ordered_params=[u'project'],
               path_params=[],
-              query_params=[u'maxResults', u'pageToken', u'project', u'projection'],
+              query_params=[u'maxResults', u'pageToken', u'prefix', u'project', u'projection'],
               relative_path=u'b',
               request_field='',
               request_type_name=u'StorageBucketsListRequest',
@@ -385,6 +394,8 @@ class StorageV1(base_api.BaseApiClient):
   class ChannelsService(base_api.BaseApiService):
     """Service class for the channels resource."""
 
+    _NAME = u'channels'
+
     def __init__(self, client):
       super(StorageV1.ChannelsService, self).__init__(client)
       self._method_configs = {
@@ -420,6 +431,8 @@ class StorageV1(base_api.BaseApiClient):
 
   class DefaultObjectAccessControlsService(base_api.BaseApiService):
     """Service class for the defaultObjectAccessControls resource."""
+
+    _NAME = u'defaultObjectAccessControls'
 
     def __init__(self, client):
       super(StorageV1.DefaultObjectAccessControlsService, self).__init__(client)
@@ -582,6 +595,8 @@ class StorageV1(base_api.BaseApiClient):
   class ObjectAccessControlsService(base_api.BaseApiService):
     """Service class for the objectAccessControls resource."""
 
+    _NAME = u'objectAccessControls'
+
     def __init__(self, client):
       super(StorageV1.ObjectAccessControlsService, self).__init__(client)
       self._method_configs = {
@@ -743,6 +758,8 @@ class StorageV1(base_api.BaseApiClient):
   class ObjectsService(base_api.BaseApiService):
     """Service class for the objects resource."""
 
+    _NAME = u'objects'
+
     def __init__(self, client):
       super(StorageV1.ObjectsService, self).__init__(client)
       self._method_configs = {
@@ -830,6 +847,18 @@ class StorageV1(base_api.BaseApiClient):
               response_type_name=u'Object',
               supports_download=False,
           ),
+          'Rewrite': base_api.ApiMethodInfo(
+              http_method=u'POST',
+              method_id=u'storage.objects.rewrite',
+              ordered_params=[u'sourceBucket', u'sourceObject', u'destinationBucket', u'destinationObject'],
+              path_params=[u'destinationBucket', u'destinationObject', u'sourceBucket', u'sourceObject'],
+              query_params=[u'destinationPredefinedAcl', u'ifGenerationMatch', u'ifGenerationNotMatch', u'ifMetagenerationMatch', u'ifMetagenerationNotMatch', u'ifSourceGenerationMatch', u'ifSourceGenerationNotMatch', u'ifSourceMetagenerationMatch', u'ifSourceMetagenerationNotMatch', u'maxBytesRewrittenPerCall', u'projection', u'rewriteToken', u'sourceGeneration'],
+              relative_path=u'b/{sourceBucket}/o/{sourceObject}/rewriteTo/b/{destinationBucket}/o/{destinationObject}',
+              request_field=u'object',
+              request_type_name=u'StorageObjectsRewriteRequest',
+              response_type_name=u'RewriteResponse',
+              supports_download=False,
+          ),
           'Update': base_api.ApiMethodInfo(
               http_method=u'PUT',
               method_id=u'storage.objects.update',
@@ -913,7 +942,7 @@ class StorageV1(base_api.BaseApiClient):
           config, request, global_params=global_params)
 
     def Get(self, request, global_params=None, download=None):
-      """Retrieves objects or their metadata.
+      """Retrieves an object or its metadata.
 
       Args:
         request: (StorageObjectsGetRequest) input message
@@ -971,6 +1000,19 @@ class StorageV1(base_api.BaseApiClient):
         (Object) The response message.
       """
       config = self.GetMethodConfig('Patch')
+      return self._RunMethod(
+          config, request, global_params=global_params)
+
+    def Rewrite(self, request, global_params=None):
+      """Rewrites a source object to a destination object. Optionally overrides metadata.
+
+      Args:
+        request: (StorageObjectsRewriteRequest) input message
+        global_params: (StandardQueryParameters, default: None) global arguments
+      Returns:
+        (RewriteResponse) The response message.
+      """
+      config = self.GetMethodConfig('Rewrite')
       return self._RunMethod(
           config, request, global_params=global_params)
 

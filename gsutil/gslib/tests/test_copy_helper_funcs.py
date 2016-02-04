@@ -14,6 +14,8 @@
 # limitations under the License.
 """Unit tests for parallel upload functions in copy_helper."""
 
+from apitools.base.py import exceptions as apitools_exceptions
+
 from util import GSMockBucketStorageUri
 
 from gslib.cloud_api import ResumableUploadAbortException
@@ -24,7 +26,6 @@ from gslib.command import CreateGsutilLogger
 from gslib.copy_helper import _AppendComponentTrackerToParallelUploadTrackerFile
 from gslib.copy_helper import _CreateParallelUploadTrackerFile
 from gslib.copy_helper import _GetPartitionInfo
-from gslib.copy_helper import _HashFilename
 from gslib.copy_helper import _ParseParallelUploadTrackerFile
 from gslib.copy_helper import FilterExistingComponents
 from gslib.copy_helper import ObjectFromTracker
@@ -34,19 +35,12 @@ from gslib.hashing_helper import CalculateB64EncodedMd5FromContents
 from gslib.storage_url import StorageUrlFromString
 from gslib.tests.mock_cloud_api import MockCloudApi
 from gslib.tests.testcase.unit_testcase import GsUtilUnitTestCase
-from gslib.third_party.storage_apitools import exceptions as apitools_exceptions
 from gslib.third_party.storage_apitools import storage_v1_messages as apitools_messages
 from gslib.util import CreateLock
 
 
 class TestCpFuncs(GsUtilUnitTestCase):
   """Unit tests for parallel upload functions in cp command."""
-
-  def test_HashFilename(self):
-    # Tests that _HashFilename function works for both string and unicode
-    # filenames (without raising any Unicode encode/decode errors).
-    _HashFilename('file1')
-    _HashFilename(u'file1')
 
   def test_GetPartitionInfo(self):
     """Tests the _GetPartitionInfo function."""
@@ -95,14 +89,23 @@ class TestCpFuncs(GsUtilUnitTestCase):
     random_prefix = '123'
     objects = ['obj1', '42', 'obj2', '314159']
     contents = '\n'.join([random_prefix] + objects)
-    fpath = self.CreateTempFile(file_name='foo',
-                                contents=contents)
+    fpath = self.CreateTempFile(file_name='foo', contents=contents)
     expected_objects = [ObjectFromTracker(objects[2 * i], objects[2 * i + 1])
                         for i in range(0, len(objects) / 2)]
     (actual_prefix, actual_objects) = _ParseParallelUploadTrackerFile(
         fpath, tracker_file_lock)
     self.assertEqual(random_prefix, actual_prefix)
     self.assertEqual(expected_objects, actual_objects)
+
+  def test_ParseEmptyParallelUploadTrackerFile(self):
+    """Tests _ParseParallelUploadTrackerFile with an empty tracker file."""
+    tracker_file_lock = CreateLock()
+    fpath = self.CreateTempFile(file_name='foo', contents='')
+    expected_objects = []
+    (actual_prefix, actual_objects) = _ParseParallelUploadTrackerFile(
+        fpath, tracker_file_lock)
+    self.assertEqual(actual_objects, expected_objects)
+    self.assertIsNotNone(actual_prefix)
 
   def test_CreateParallelUploadTrackerFile(self):
     """Tests the _CreateParallelUploadTrackerFile function."""
@@ -359,7 +362,17 @@ class TestCpFuncs(GsUtilUnitTestCase):
     translated_exc = gsutil_api._TranslateApitoolsResumableUploadException(exc)
     self.assertTrue(isinstance(translated_exc, ResumableUploadException))
 
+    gsutil_api.http.disable_ssl_certificate_validation = False
+    exc = apitools_exceptions.HttpError({'status': 429}, None, None)
+    translated_exc = gsutil_api._TranslateApitoolsResumableUploadException(exc)
+    self.assertTrue(isinstance(translated_exc, ResumableUploadException))
+
     exc = apitools_exceptions.HttpError({'status': 410}, None, None)
+    translated_exc = gsutil_api._TranslateApitoolsResumableUploadException(exc)
+    self.assertTrue(isinstance(translated_exc,
+                               ResumableUploadStartOverException))
+
+    exc = apitools_exceptions.HttpError({'status': 404}, None, None)
     translated_exc = gsutil_api._TranslateApitoolsResumableUploadException(exc)
     self.assertTrue(isinstance(translated_exc,
                                ResumableUploadStartOverException))

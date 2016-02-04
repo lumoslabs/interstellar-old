@@ -26,7 +26,8 @@ class CloudApi(object):
   a separate instance of the gsutil Cloud API should be instantiated per-thread.
   """
 
-  def __init__(self, bucket_storage_uri_class, logger, provider=None, debug=0):
+  def __init__(self, bucket_storage_uri_class, logger, provider=None,
+               debug=0, trace_token=None, perf_trace_token=None):
     """Performs necessary setup for interacting with the cloud storage provider.
 
     Args:
@@ -36,11 +37,16 @@ class CloudApi(object):
       provider: Default provider prefix describing cloud storage provider to
                 connect to.
       debug: Debug level for the API implementation (0..3).
+      trace_token: Google internal trace token to pass to the API
+                   implementation (string).
+      perf_trace_token: Performance trace token to use when making API calls.
     """
     self.bucket_storage_uri_class = bucket_storage_uri_class
     self.logger = logger
     self.provider = provider
     self.debug = debug
+    self.trace_token = trace_token
+    self.perf_trace_token = perf_trace_token
 
   def GetBucket(self, bucket_name, provider=None, fields=None):
     """Gets Bucket metadata.
@@ -269,12 +275,13 @@ class CloudApi(object):
       start_byte: Starting point for download (for resumable downloads and
                   range requests). Can be set to negative to request a range
                   of bytes (python equivalent of [:-3])
-      end_byte: Ending point for download (for range requests).
+      end_byte: Ending byte number, inclusive, for download (for range
+                requests). If None, download the rest of the object.
       progress_callback: Optional callback function for progress notifications.
                          Receives calls with arguments
                          (bytes_transferred, total_size).
-      serialization_data: Implementation-specific dict containing serialization
-                          information for the download.
+      serialization_data: Implementation-specific JSON string of a dict
+                          containing serialization information for the download.
       digesters: Dict of {string : digester}, where string is a name of a hash
                  algorithm, and digester is a validation digester that supports
                  update(bytes) and digest() using that algorithm.
@@ -389,20 +396,25 @@ class CloudApi(object):
     """
     raise NotImplementedError('UploadObjectResumable must be overloaded')
 
-  def CopyObject(self, src_bucket_name, src_obj_name, dst_obj_metadata,
-                 src_generation=None, canned_acl=None, preconditions=None,
-                 provider=None, fields=None):
+  def CopyObject(self, src_obj_metadata, dst_obj_metadata, src_generation=None,
+                 canned_acl=None, preconditions=None, progress_callback=None,
+                 max_bytes_per_call=None, provider=None, fields=None):
     """Copies an object in the cloud.
 
     Args:
-      src_bucket_name: Bucket containing the source object
-      src_obj_name: Name of the source object.
+      src_obj_metadata: Object metadata for source object.  Must include
+                        bucket name, object name, and etag.
       dst_obj_metadata: Object metadata for new object.  Must include bucket
                         and object name.
       src_generation: Generation of the source object to copy.
       canned_acl: Optional canned ACL to apply to destination object. Overrides
                   ACL set in dst_obj_metadata.
       preconditions: Destination object preconditions for the request.
+      progress_callback: Optional callback function for progress notifications.
+                         Receives calls with arguments
+                         (bytes_transferred, total_size).
+      max_bytes_per_call: Integer describing maximum number of bytes
+                          to rewrite per service call.
       provider: Cloud storage provider to connect to.  If not present,
                 class-wide default is used.
       fields: If present, return only these Object metadata fields.
@@ -595,6 +607,15 @@ class PreconditionException(ServiceException):
 
 class NotFoundException(ServiceException):
   """Exception raised when a resource is not found (404)."""
+
+
+class BucketNotFoundException(NotFoundException):
+  """Exception raised when a bucket resource is not found (404)."""
+
+  def __init__(self, reason, bucket_name, status=None, body=None):
+    super(BucketNotFoundException, self).__init__(reason, status=status,
+                                                  body=body)
+    self.bucket_name = bucket_name
 
 
 class NotEmptyException(ServiceException):

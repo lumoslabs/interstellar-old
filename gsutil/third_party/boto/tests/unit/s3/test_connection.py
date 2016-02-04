@@ -19,10 +19,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 #
-import mock
 import time
 
-from tests.unit import unittest
+from tests.compat import mock, unittest
 from tests.unit import AWSMockServiceTestCase
 from tests.unit import MockServiceWithConfigTestCase
 
@@ -135,6 +134,26 @@ class TestSigV4Presigned(MockServiceWithConfigTestCase):
 
         self.assertIn('VersionId=2', url)
         self.assertIn('X-Amz-Security-Token=token', url)
+
+    def test_sigv4_presign_headers(self):
+        self.config = {
+            's3': {
+                'use-sigv4': True,
+            }
+        }
+
+        conn = self.connection_class(
+            aws_access_key_id='less',
+            aws_secret_access_key='more',
+            host='s3.amazonaws.com'
+        )
+
+        headers = {'x-amz-meta-key': 'val'}
+        url = conn.generate_url_sigv4(86400, 'GET', bucket='examplebucket',
+                                      key='test.txt', headers=headers)
+
+        self.assertIn('host', url)
+        self.assertIn('x-amz-meta-key', url)
 
 
 class TestUnicodeCallingFormat(AWSMockServiceTestCase):

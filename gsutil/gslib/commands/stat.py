@@ -17,6 +17,7 @@
 from __future__ import absolute_import
 
 import logging
+import sys
 
 from gslib.bucket_listing_ref import BucketListingObject
 from gslib.cloud_api import AccessDeniedException
@@ -47,8 +48,11 @@ _DETAILED_HELP_TEXT = ("""
 
     gsutil ls -L gs://some-bucket/some-object
 
-  but is more efficient because it avoids performing bucket listings gets the
-  minimum necessary amount of object metadata.
+  but is more efficient because it avoids performing bucket listings and gets
+  the minimum necessary amount of object metadata. Moreover, because it avoids
+  performing bucket listings (which are eventually consistent) the gsutil stat
+  command provides a strongly consistent way to check for the existence (and
+  read the metadata) of an object.
 
   The gsutil stat command will, however, perform bucket listings if you specify
   URLs using wildcards.
@@ -63,12 +67,16 @@ _DETAILED_HELP_TEXT = ("""
   Note: Unlike the gsutil ls command, the stat command does not support
   operations on sub-directories. For example, if you run the command:
 
-    gsutil -q stat gs://some-bucket/some-object/
+    gsutil -q stat gs://some-bucket/some-subdir/
 
-  gsutil will look up information about the object "some-object/" (with a
-  trailing slash) inside bucket "some-bucket", as opposed to operating on
-  objects nested under gs://some-bucket/some-object. Unless you actually have an
-  object with that name, the operation will fail.
+  gsutil will look for information about an object called "some-subdir/" (with a
+  trailing slash) inside the bucket "some-bucket", as opposed to operating on
+  objects nested under gs://some-bucket/some-subdir/. Unless you actually have
+  an object with that name, the operation will fail. However, you can use the
+  stat command on objects within subdirectories. For example, this command will
+  work as expected:
+
+    gsutil -q stat gs://some-bucket/some-subdir/file.txt
 """)
 
 
@@ -131,14 +139,14 @@ class StatCommand(Command):
             if logging.getLogger().isEnabledFor(logging.INFO):
               PrintFullInfoAboutObject(blr, incl_acl=False)
       except AccessDeniedException:
-        print 'You aren\'t authorized to read %s - skipping' % url_str
+        sys.stderr.write('You aren\'t authorized to read %s - skipping' %
+                         url_str)
       except InvalidUrlError:
         raise
       except NotFoundException:
         pass
       if not arg_matches:
-        if logging.getLogger().isEnabledFor(logging.INFO):
-          print 'No URLs matched %s' % url_str
+        sys.stderr.write('No URLs matched %s' % url_str)
         found_nonmatching_arg = True
     if found_nonmatching_arg:
       return 1

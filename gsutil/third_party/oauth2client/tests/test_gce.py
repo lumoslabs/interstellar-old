@@ -12,130 +12,166 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 """Tests for oauth2client.gce.
 
 Unit tests for oauth2client.gce.
 """
 
-__author__ = 'jcgregorio@google.com (Joe Gregorio)'
-
-import httplib2
-try:
-  from mox3 import mox
-except ImportError:
-  import mox
+import json
+from six.moves import urllib
 import unittest
 
+import mock
+
+from oauth2client._helpers import _to_bytes
 from oauth2client.client import AccessTokenRefreshError
 from oauth2client.client import Credentials
 from oauth2client.client import save_to_well_known_file
 from oauth2client.gce import AppAssertionCredentials
 
 
-class AssertionCredentialsTests(unittest.TestCase):
+__author__ = 'jcgregorio@google.com (Joe Gregorio)'
 
-  def test_good_refresh(self):
-    m = mox.Mox()
 
-    httplib2_response = m.CreateMock(object)
-    httplib2_response.status = 200
+class AppAssertionCredentialsTests(unittest.TestCase):
 
-    httplib2_request = m.CreateMock(object)
-    httplib2_request.__call__(
-        ('http://metadata.google.internal/0.1/meta-data/service-accounts/'
-         'default/acquire'
-         '?scope=http%3A%2F%2Fexample.com%2Fa%20http%3A%2F%2Fexample.com%2Fb'
-        )).AndReturn((httplib2_response, '{"accessToken": "this-is-a-token"}'))
+    def test_constructor(self):
+        scope = 'http://example.com/a http://example.com/b'
+        scopes = scope.split()
+        credentials = AppAssertionCredentials(scope=scopes, foo='bar')
+        self.assertEqual(credentials.scope, scope)
+        self.assertEqual(credentials.kwargs, {'foo': 'bar'})
+        self.assertEqual(credentials.assertion_type, None)
 
-    m.ReplayAll()
+    def test_to_json_and_from_json(self):
+        credentials = AppAssertionCredentials(
+            scope=['http://example.com/a', 'http://example.com/b'])
+        json = credentials.to_json()
+        credentials_from_json = Credentials.new_from_json(json)
+        self.assertEqual(credentials.access_token,
+                         credentials_from_json.access_token)
 
-    c = AppAssertionCredentials(scope=['http://example.com/a',
-                                       'http://example.com/b'])
+    def _refresh_success_helper(self, bytes_response=False):
+        access_token = u'this-is-a-token'
+        return_val = json.dumps({u'accessToken': access_token})
+        if bytes_response:
+            return_val = _to_bytes(return_val)
+        http = mock.MagicMock()
+        http.request = mock.MagicMock(
+            return_value=(mock.Mock(status=200), return_val))
 
-    c._refresh(httplib2_request)
+        scopes = ['http://example.com/a', 'http://example.com/b']
+        credentials = AppAssertionCredentials(scope=scopes)
+        self.assertEquals(None, credentials.access_token)
+        credentials.refresh(http)
+        self.assertEquals(access_token, credentials.access_token)
 
-    self.assertEquals('this-is-a-token', c.access_token)
+        base_metadata_uri = ('http://metadata.google.internal/0.1/meta-data/'
+                             'service-accounts/default/acquire')
+        escaped_scopes = urllib.parse.quote(' '.join(scopes), safe='')
+        request_uri = base_metadata_uri + '?scope=' + escaped_scopes
+        http.request.assert_called_once_with(request_uri)
 
-    m.UnsetStubs()
-    m.VerifyAll()
+    def test_refresh_success(self):
+        self._refresh_success_helper(bytes_response=False)
 
-  def test_fail_refresh(self):
-    m = mox.Mox()
+    def test_refresh_success_bytes(self):
+        self._refresh_success_helper(bytes_response=True)
 
-    httplib2_response = m.CreateMock(object)
-    httplib2_response.status = 400
+    def test_refresh_failure_bad_json(self):
+        http = mock.MagicMock()
+        content = '{BADJSON'
+        http.request = mock.MagicMock(
+            return_value=(mock.Mock(status=200), content))
 
-    httplib2_request = m.CreateMock(object)
-    httplib2_request.__call__(
-        ('http://metadata.google.internal/0.1/meta-data/service-accounts/'
-         'default/acquire'
-         '?scope=http%3A%2F%2Fexample.com%2Fa%20http%3A%2F%2Fexample.com%2Fb'
-        )).AndReturn((httplib2_response, '{"accessToken": "this-is-a-token"}'))
+        credentials = AppAssertionCredentials(
+            scope=['http://example.com/a', 'http://example.com/b'])
+        self.assertRaises(AccessTokenRefreshError, credentials.refresh, http)
 
-    m.ReplayAll()
+    def test_refresh_failure_400(self):
+        http = mock.MagicMock()
+        content = '{}'
+        http.request = mock.MagicMock(
+            return_value=(mock.Mock(status=400), content))
 
-    c = AppAssertionCredentials(scope=['http://example.com/a',
-                                       'http://example.com/b'])
+        credentials = AppAssertionCredentials(
+            scope=['http://example.com/a', 'http://example.com/b'])
 
-    try:
-      c._refresh(httplib2_request)
-      self.fail('Should have raised exception on 400')
-    except AccessTokenRefreshError:
-      pass
+        exception_caught = None
+        try:
+            credentials.refresh(http)
+        except AccessTokenRefreshError as exc:
+            exception_caught = exc
 
-    m.UnsetStubs()
-    m.VerifyAll()
+        self.assertNotEqual(exception_caught, None)
+        self.assertEqual(str(exception_caught), content)
 
-  def test_to_from_json(self):
-    c = AppAssertionCredentials(scope=['http://example.com/a',
-                                       'http://example.com/b'])
-    json = c.to_json()
-    c2 = Credentials.new_from_json(json)
+    def test_refresh_failure_404(self):
+        http = mock.MagicMock()
+        content = '{}'
+        http.request = mock.MagicMock(
+            return_value=(mock.Mock(status=404), content))
 
-    self.assertEqual(c.access_token, c2.access_token)
+        credentials = AppAssertionCredentials(
+            scope=['http://example.com/a', 'http://example.com/b'])
 
-  def test_create_scoped_required_without_scopes(self):
-    credentials = AppAssertionCredentials([])
-    self.assertTrue(credentials.create_scoped_required())
+        exception_caught = None
+        try:
+            credentials.refresh(http)
+        except AccessTokenRefreshError as exc:
+            exception_caught = exc
 
-  def test_create_scoped_required_with_scopes(self):
-    credentials = AppAssertionCredentials(['dummy_scope'])
-    self.assertFalse(credentials.create_scoped_required())
+        self.assertNotEqual(exception_caught, None)
+        expanded_content = content + (' This can occur if a VM was created'
+                                      ' with no service account or scopes.')
+        self.assertEqual(str(exception_caught), expanded_content)
 
-  def test_create_scoped(self):
-    credentials = AppAssertionCredentials([])
-    new_credentials = credentials.create_scoped(['dummy_scope'])
-    self.assertNotEqual(credentials, new_credentials)
-    self.assertTrue(isinstance(new_credentials, AppAssertionCredentials))
-    self.assertEqual('dummy_scope', new_credentials.scope)
+    def test_serialization_data(self):
+        credentials = AppAssertionCredentials(scope=[])
+        self.assertRaises(NotImplementedError, getattr,
+                          credentials, 'serialization_data')
 
-  def test_get_access_token(self):
-    m = mox.Mox()
+    def test_create_scoped_required_without_scopes(self):
+        credentials = AppAssertionCredentials([])
+        self.assertTrue(credentials.create_scoped_required())
 
-    httplib2_response = m.CreateMock(object)
-    httplib2_response.status = 200
+    def test_create_scoped_required_with_scopes(self):
+        credentials = AppAssertionCredentials(['dummy_scope'])
+        self.assertFalse(credentials.create_scoped_required())
 
-    httplib2_request = m.CreateMock(object)
-    httplib2_request.__call__(
-        ('http://metadata.google.internal/0.1/meta-data/service-accounts/'
-         'default/acquire?scope=dummy_scope'
-        )).AndReturn((httplib2_response, '{"accessToken": "this-is-a-token"}'))
+    def test_create_scoped(self):
+        credentials = AppAssertionCredentials([])
+        new_credentials = credentials.create_scoped(['dummy_scope'])
+        self.assertNotEqual(credentials, new_credentials)
+        self.assertTrue(isinstance(new_credentials, AppAssertionCredentials))
+        self.assertEqual('dummy_scope', new_credentials.scope)
 
-    m.ReplayAll()
+    def test_get_access_token(self):
+        http = mock.MagicMock()
+        http.request = mock.MagicMock(
+            return_value=(mock.Mock(status=200),
+                          '{"accessToken": "this-is-a-token"}'))
 
-    credentials = AppAssertionCredentials(['dummy_scope'])
+        credentials = AppAssertionCredentials(['dummy_scope'])
+        token = credentials.get_access_token(http=http)
+        self.assertEqual('this-is-a-token', token.access_token)
+        self.assertEqual(None, token.expires_in)
 
-    http = httplib2.Http()
-    http.request = httplib2_request
+        http.request.assert_called_once_with(
+            'http://metadata.google.internal/0.1/meta-data/service-accounts/'
+            'default/acquire?scope=dummy_scope')
 
-    token = credentials.get_access_token(http=http)
-    self.assertEqual('this-is-a-token', token.access_token)
-    self.assertEqual(None, token.expires_in)
+    def test_save_to_well_known_file(self):
+        import os
+        ORIGINAL_ISDIR = os.path.isdir
+        try:
+            os.path.isdir = lambda path: True
+            credentials = AppAssertionCredentials([])
+            self.assertRaises(NotImplementedError, save_to_well_known_file,
+                              credentials)
+        finally:
+            os.path.isdir = ORIGINAL_ISDIR
 
-    m.UnsetStubs()
-    m.VerifyAll()
 
-  def test_save_to_well_known_file(self):
-    credentials = AppAssertionCredentials([])
-    self.assertRaises(NotImplementedError, save_to_well_known_file, credentials)
+if __name__ == '__main__':  # pragma: NO COVER
+    unittest.main()

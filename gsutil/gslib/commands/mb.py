@@ -57,51 +57,78 @@ _DETAILED_HELP_TEXT = ("""
 
 <B>BUCKET STORAGE CLASSES</B>
   If you don't specify a -c option, the bucket will be created with the default
-  (standard) storage class.
+  (Standard) storage class.
 
   If you specify -c DURABLE_REDUCED_AVAILABILITY (or -c DRA), it causes the data
-  stored in the bucket to use durable reduced availability storage. Buckets
-  created with this storage class have lower availability than standard storage
-  class buckets, but durability equal to that of buckets created with standard
+  stored in the bucket to use Durable Reduced Availability storage. Buckets
+  created with this storage class have lower availability than Standard storage
+  class buckets, but durability equal to that of buckets created with Standard
   storage class. This option allows users to reduce costs for data for which
   lower availability is acceptable. Durable Reduced Availability storage would
   not be appropriate for "hot" objects (i.e., objects being accessed frequently)
   or for interactive workloads; however, it might be appropriate for other types
-  of applications. See the online documentation for pricing and SLA details.
+  of applications. See the online documentation for
+  `pricing <https://cloud.google.com/storage/pricing>`_
+  and `SLA <https://cloud.google.com/storage/sla>`_
+  details.
+
+
+  If you specify -c NEARLINE (or -c NL), it causes the data
+  stored in the bucket to use Nearline storage. Buckets created with this
+  storage class have higher latency and lower throughput than Standard storage
+  class buckets. The availability and durability remains equal to that of
+  buckets created with the Standard storage class. This option is best for
+  objects which are accessed rarely and for which slower performance is
+  acceptable. See the online documentation for
+  `pricing <https://cloud.google.com/storage/pricing>`_ and
+  `SLA <https://cloud.google.com/storage/sla>`_ details.
 
 
 <B>BUCKET LOCATIONS</B>
   If you don't specify a -l option, the bucket will be created in the default
-  location (US). Otherwise, you can specify one of the available locations:
+  location (US). Otherwise, you can specify one of the available
+  `multi-regional locations <https://cloud.google.com/storage/docs/bucket-locations>`_.
 
-  - ASIA (Asia)
-  - ASIA-EAST1 (Eastern Asia-Pacific)
+  - ASIA (Asia Pacific)
   - EU (European Union)
   - US (United States)
-  - US-EAST1 (Eastern United States) [1]_
-  - US-EAST2 (Eastern United States) [1]_
-  - US-EAST3 (Eastern United States) [1]_
-  - US-CENTRAL1 (Central United States) [1]_
-  - US-CENTRAL2 (Central United States) [1]_
-  - US-WEST1 (Western United States) [1]_
 
-  .. [1] These locations are for `Regional Buckets <https://developers.google.com/storage/docs/regional-buckets>`_.
-     Regional Buckets is an experimental feature and data stored in these
-     locations is not subject to the usual SLA. See the documentation for
-     additional information.
+  Example:
+    gsutil mb -l ASIA gs://some-bucket
 
-  Note that creating a regional bucket can only be done using the
-  DURABLE_REDUCED_AVAILABILITY storage class - for example:
+  You can also create a bucket in a
+  `regional location <https://cloud.google.com/storage/docs/bucket-locations>`_.
+  The following regional locations support all storage classes:
 
-    gsutil mb -c DRA -l US-CENTRAL1 gs://some-bucket
+  - ASIA-EAST1 (Eastern Asia-Pacific)
+  - EUROPE-WEST1 (Western Europe)
+  - US-CENTRAL1 (Central United States)
+  - US-EAST1 (Eastern United States)
+
+  Example:
+    gsutil mb -c NEARLINE -l EUROPE-WEST1 gs://some-bucket
+
+  The following regional locations are in Alpha and support just the Durable
+  Reduced Availability storage class (-C DRA). Data stored in these locations
+  is not subject to the usual SLA. See the
+  `bucket location <https://cloud.google.com/storage/docs/bucket-locations>`_
+  documentation for additional information.
+
+  - US-CENTRAL2 (Central United States)
+  - US-EAST2 (Eastern United States)
+  - US-EAST3 (Eastern United States)
+  - US-WEST1 (Western United States)
+
+  Example:
+    gsutil mb -c DRA -l US-CENTRAL2 gs://some-bucket
 
 
 <B>OPTIONS</B>
-  -c class          Can be DRA (or DURABLE_REDUCED_AVAILABILITY) or S (or
-                    STANDARD). Default is STANDARD.
+  -c class          Can be DRA (or DURABLE_REDUCED_AVAILABILITY), NL (or
+                    NEARLINE), or S (or STANDARD). Default is STANDARD.
 
-  -l location       Can be any of the locations described above. Default is US.
-                    Locations are case insensitive.
+  -l location       Can be any multi-regional or regional location as described
+                    above. Default is US. Locations are case insensitive.
 
   -p proj_id        Specifies the project ID under which to create the bucket.
 """)
@@ -133,7 +160,7 @@ class MbCommand(Command):
       help_name_aliases=[
           'createbucket', 'makebucket', 'md', 'mkdir', 'location', 'dra',
           'dras', 'reduced_availability', 'durable_reduced_availability', 'rr',
-          'reduced_redundancy', 'standard', 'storage class'],
+          'reduced_redundancy', 'standard', 'storage class', 'nearline', 'nl'],
       help_type='command_help',
       help_one_line_summary='Make buckets',
       help_text=_DETAILED_HELP_TEXT,
@@ -190,4 +217,6 @@ class MbCommand(Command):
       return 'DURABLE_REDUCED_AVAILABILITY'
     if sc in ('S', 'STD', 'STANDARD'):
       return 'STANDARD'
+    if sc in ('NL', 'NEARLINE'):
+      return 'NEARLINE'
     return sc

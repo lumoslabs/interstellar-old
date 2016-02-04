@@ -24,9 +24,14 @@ import calendar
 from datetime import datetime
 from datetime import timedelta
 import getpass
+import json
 import re
 import time
 import urllib
+
+from apitools.base.py.exceptions import HttpError
+from apitools.base.py.http_wrapper import MakeRequest
+from apitools.base.py.http_wrapper import Request
 
 from gslib.command import Command
 from gslib.command_argument import CommandArgument
@@ -34,9 +39,6 @@ from gslib.cs_api_map import ApiSelector
 from gslib.exception import CommandException
 from gslib.storage_url import ContainsWildcard
 from gslib.storage_url import StorageUrlFromString
-from gslib.third_party.storage_apitools.exceptions import HttpError
-from gslib.third_party.storage_apitools.http_wrapper import MakeRequest
-from gslib.third_party.storage_apitools.http_wrapper import Request
 from gslib.util import GetNewHttp
 from gslib.util import NO_MAX
 from gslib.util import UTF8
@@ -44,17 +46,21 @@ from gslib.util import UTF8
 try:
   # Check for openssl.
   # pylint: disable=C6204
+  from OpenSSL.crypto import FILETYPE_PEM
   from OpenSSL.crypto import load_pkcs12
+  from OpenSSL.crypto import load_privatekey
   from OpenSSL.crypto import sign
   HAVE_OPENSSL = True
 except ImportError:
+  load_privatekey = None
   load_pkcs12 = None
   sign = None
   HAVE_OPENSSL = False
+  FILETYPE_PEM = None
 
 
 _SYNOPSIS = """
-  gsutil signurl pkcs12-file url...
+  gsutil signurl [-c] [-d] [-m] [-p] keystore-file url...
 """
 
 _DETAILED_HELP_TEXT = ("""
@@ -67,7 +73,7 @@ _DETAILED_HELP_TEXT = ("""
   the specified objects without authentication for a specific period of time.
 
   Please see the `Signed URLs documentation
-  https://developers.google.com/storage/docs/accesscontrol#Signed-URLs` for
+  <https://developers.google.com/storage/docs/accesscontrol#Signed-URLs>`_ for
   background about signed URLs.
 
   Multiple gs:// urls may be provided and may contain wildcards.  A signed url
@@ -81,12 +87,13 @@ _DETAILED_HELP_TEXT = ("""
 
   The signurl command uses the private key for a  service account (the
   '<private-key-file>' argument) to generate the cryptographic
-  signature for the generated URL.  The private key file must be in PKCS12
-  format. The signurl command will prompt for the passphrase used to protect
-  the private key file (default 'notasecret').  For more information
-  regarding generating a private key for use with the signurl command please
-  see the `Authentication documentation.
-  https://developers.google.com/storage/docs/authentication#generating-a-private-key`
+  signature for the generated URL. The private key file must be in PKCS12
+  or JSON format. If the private key is encrypted the signed url command will
+  prompt for the passphrase used to protect the private key file
+  (default 'notasecret').  For more information regarding generating a private
+  key for use with the signurl command please see the `Authentication
+  documentation.
+  <https://developers.google.com/storage/docs/authentication#generating-a-private-key>`_
 
   gsutil will look up information about the object "some-object/" (with a
   trailing slash) inside bucket "some-bucket", as opposed to operating on
@@ -95,7 +102,11 @@ _DETAILED_HELP_TEXT = ("""
 
 <B>OPTIONS</B>
   -m          Specifies the HTTP method to be authorized for use
-              with the signed url, default is GET.
+              with the signed url, default is GET. You may also specify
+              RESUMABLE to create a signed resumable upload start URL. When
+              using a signed URL to start a resumable upload session, you will
+              need to specify the 'x-goog-resumable:start' header in the
+              request or else signature validation will fail.
 
   -d          Specifies the duration that the signed url should be valid
               for, default duration is 1 hour.
@@ -116,17 +127,19 @@ _DETAILED_HELP_TEXT = ("""
 
   Create a signed url for downloading an object valid for 10 minutes:
 
-    gsutil signurl <private-key-file> -d 10m gs://<bucket>/<object>
+    gsutil signurl -d 10m <private-key-file> gs://<bucket>/<object>
 
   Create a signed url for uploading a plain text file via HTTP PUT:
 
-    gsutil signurl <private-key-file> -m PUT -d 1h -c text/plain gs://<bucket>/<obj>
+    gsutil signurl -m PUT -d 1h -c text/plain <private-key-file> \\
+        gs://<bucket>/<obj>
 
   To construct a signed URL that allows anyone in possession of
   the URL to PUT to the specified bucket for one day, creating
   any object of Content-Type image/jpg, run:
 
-    gsutil signurl <private-key-file> -m PUT -d 1d -c image/jpg gs://<bucket>/<obj>
+    gsutil signurl -m PUT -d 1d -c image/jpg <private-key-file> \\
+        gs://<bucket>/<obj>
 
 
 """)
@@ -160,9 +173,16 @@ def _GenSignedUrl(key, client_id, method, md5,
   """Construct a string to sign with the provided key and returns \
   the complete url."""
 
-  tosign = ('{0}\n{1}\n{2}\n{3}\n/{4}'
+  if method == 'RESUMABLE':
+    method = 'POST'
+    canonicalized_resource = 'x-goog-resumable:start\n/{0}'.format(
+        gcs_path)
+  else:
+    canonicalized_resource = '/{0}'.format(gcs_path)
+
+  tosign = ('{0}\n{1}\n{2}\n{3}\n{4}'
             .format(method, md5, content_type,
-                    expiration, gcs_path))
+                    expiration, canonicalized_resource))
   signature = base64.b64encode(sign(key, tosign, 'RSA-SHA256'))
 
   final_url = ('https://storage.googleapis.com/{0}?'
@@ -175,12 +195,48 @@ def _GenSignedUrl(key, client_id, method, md5,
 
 def _ReadKeystore(ks_contents, passwd):
   ks = load_pkcs12(ks_contents, passwd)
-  client_id = (ks.get_certificate()
-               .get_subject()
-               .CN.replace('.apps.googleusercontent.com',
-                           '@developer.gserviceaccount.com'))
+  client_email = (ks.get_certificate()
+                  .get_subject()
+                  .CN.replace('.apps.googleusercontent.com',
+                              '@developer.gserviceaccount.com'))
 
-  return ks, client_id
+  return ks.get_privatekey(), client_email
+
+
+def _ReadJSONKeystore(ks_contents, passwd=None):
+  """Read the client email and private key from a JSON keystore.
+
+  Assumes this keystore was downloaded from the Developers Console. By default
+  JSON keystore private keys from the Developers Console aren't encrypted so the
+  passwd is optional as load_privatekey will prompt for the PEM passphrase if
+  the key is encrypted.
+
+  Arguments:
+    ks_contents: JSON formatted string representing the keystore contents. Must
+                 be a valid JSON string and contain the fields 'private_key'
+                 and 'client_email'.
+    passwd: Passphrase for encrypted private keys.
+
+  Returns:
+    key: Parsed private key from the keystore.
+    client_email: The email address for the service account.
+
+  Raises:
+    ValueError: If unable to parse ks_contents or keystore is missing
+                required fields.
+  """
+  ks = json.loads(ks_contents)
+
+  if 'client_email' not in ks or 'private_key' not in ks:
+    raise ValueError('JSON keystore doesn\'t contain required fields')
+
+  client_email = ks['client_email']
+  if passwd:
+    key = load_privatekey(FILETYPE_PEM, ks['private_key'], passwd)
+  else:
+    key = load_privatekey(FILETYPE_PEM, ks['private_key'])
+
+  return key, client_email
 
 
 class UrlSignCommand(Command):
@@ -240,15 +296,16 @@ class UrlSignCommand(Command):
       delta = timedelta(hours=1)
 
     expiration = calendar.timegm((datetime.utcnow() + delta).utctimetuple())
-    if method not in ['GET', 'PUT', 'DELETE', 'HEAD']:
-      raise CommandException('HTTP method must be one of [GET|HEAD|PUT|DELETE]')
+    if method not in ['GET', 'PUT', 'DELETE', 'HEAD', 'RESUMABLE']:
+      raise CommandException('HTTP method must be one of'
+                             '[GET|HEAD|PUT|DELETE|RESUMABLE]')
 
     return method, expiration, content_type, passwd
 
-  def _ProbeObjectAccessWithClient(self, key, client_id, gcs_path):
+  def _ProbeObjectAccessWithClient(self, key, client_email, gcs_path):
     """Performs a head request against a signed url to check for read access."""
 
-    signed_url = _GenSignedUrl(key, client_id, 'HEAD', '', '',
+    signed_url = _GenSignedUrl(key, client_email, 'HEAD', '', '',
                                int(time.time()) + 10, gcs_path)
 
     try:
@@ -285,10 +342,21 @@ class UrlSignCommand(Command):
     method, expiration, content_type, passwd = self._ParseAndCheckSubOpts()
     storage_urls = self._EnumerateStorageUrls(self.args[1:])
 
-    if not passwd:
-      passwd = getpass.getpass('Keystore password:')
-
-    ks, client_id = _ReadKeystore(open(self.args[0], 'rb').read(), passwd)
+    key = None
+    client_email = None
+    try:
+      key, client_email = _ReadJSONKeystore(open(self.args[0], 'rb').read(),
+                                            passwd)
+    except ValueError:
+      # Ignore and try parsing as a pkcs12.
+      if not passwd:
+        passwd = getpass.getpass('Keystore password:')
+      try:
+        key, client_email = _ReadKeystore(
+            open(self.args[0], 'rb').read(), passwd)
+      except ValueError:
+        raise CommandException('Unable to parse private key from {0}'.format(
+            self.args[0]))
 
     print 'URL\tHTTP Method\tExpiration\tSigned URL'
     for url in storage_urls:
@@ -302,7 +370,7 @@ class UrlSignCommand(Command):
         gcs_path = '{0}/{1}'.format(url.bucket_name,
                                     urllib.quote(url.object_name.encode(UTF8)))
 
-      final_url = _GenSignedUrl(ks.get_privatekey(), client_id,
+      final_url = _GenSignedUrl(key, client_email,
                                 method, '', content_type, expiration,
                                 gcs_path)
 
@@ -313,8 +381,8 @@ class UrlSignCommand(Command):
                                          .strftime('%Y-%m-%d %H:%M:%S')),
                                         final_url.encode(UTF8))
 
-      response_code = self._ProbeObjectAccessWithClient(ks.get_privatekey(),
-                                                        client_id, gcs_path)
+      response_code = self._ProbeObjectAccessWithClient(
+          key, client_email, gcs_path)
 
       if response_code == 404 and method != 'PUT':
         if url.IsBucket():
@@ -331,6 +399,6 @@ class UrlSignCommand(Command):
         self.logger.warn(
             '%s does not have permissions on %s, using this link will likely '
             'result in a 403 error until at least READ permissions are granted',
-            client_id, url)
+            client_email, url)
 
     return 0

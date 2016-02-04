@@ -25,14 +25,16 @@ _DETAILED_HELP_TEXT = ("""
     - Access denied, because the bucket or object you are trying to use has an
       ACL that doesn't permit the action you're trying to perform.
 
-  In other cases errors are retryable - basically, the HTTP 5xx error codes. For
-  these cases, gsutil will retry using a truncated binary exponential backoff
-  strategy:
+  In other cases errors are retryable - basically, the HTTP 429 and 5xx error
+  codes. For these cases, gsutil will retry using a truncated binary exponential
+  backoff strategy:
 
     - Wait a random period between [0..1] seconds and retry;
     - If that fails, wait a random period between [0..2] seconds and retry;
     - If that fails, wait a random period between [0..4] seconds and retry;
-    - And so on, up to a configurable maximum number of retries (default = 6).
+    - And so on, up to a configurable maximum number of retries (default = 6),
+    with each retry period bounded by a configurable maximum period of time
+    (default = 60 seconds).
 
   Thus, by default, gsutil will retry 6 times over 1+2+4+8+16+32=63 seconds.
   You can adjust the number of retries and maximum delay of any individual retry
@@ -54,7 +56,7 @@ class CommandOptions(HelpProvider):
   # Help specification. See help_provider.py for documentation.
   help_spec = HelpProvider.HelpSpec(
       help_name='retries',
-      help_name_aliases=['retry', 'backoff'],
+      help_name_aliases=['retry', 'backoff', 'reliability'],
       help_type='additional_help',
       help_one_line_summary='Retry Handling Strategy',
       help_text=_DETAILED_HELP_TEXT,

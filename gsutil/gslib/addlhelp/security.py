@@ -32,9 +32,10 @@ _DETAILED_HELP_TEXT = ("""
   resumable upload identifiers, and such tokens must be protected from being
   eavesdropped and reused.
 
-  gsutil also supports the older HMAC style of authentication. While HMAC
-  authentication does not use bearer tokens (and thus is not subject to
-  eavesdropping/replay attacks), it's still important to encrypt data traffic.
+  gsutil also supports the older HMAC style of authentication via the XML API
+  (see "gsutil help apis").  While HMAC authentication does not use bearer
+  tokens (and thus is not subject to eavesdropping/replay attacks), it's still
+  important to encrypt data traffic.
 
   Prior to gsutil release 4.0 it was possible to use HTTP instead of HTTPS by
   setting the "is_secure" configuration parameter in the [Boto] section of the
@@ -185,6 +186,10 @@ _DETAILED_HELP_TEXT = ("""
   refresh and access tokens in the output. Make sure to redact this information
   before sending this debug output to anyone during troubleshooting/tech support
   interactions.
+
+  If you run gsutil --trace-token (to send a trace directly to Google),
+  sensitive information like OAuth2 tokens and the contents of any files
+  accessed during the trace may be included in the content of the trace.
 
   The proxy configuration information in the .boto configuration is
   security-sensitive, especially if your proxy setup requires user and

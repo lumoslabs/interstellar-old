@@ -18,6 +18,7 @@ from __future__ import absolute_import
 
 import datetime
 from httplib import ResponseNotReady
+import json
 import multiprocessing
 import os
 import platform
@@ -40,6 +41,10 @@ from gslib.commands.compose import MAX_COMPONENT_COUNT
 from gslib.cred_types import CredTypes
 from gslib.exception import AbortException
 from gslib.exception import CommandException
+from gslib.hashing_helper import CHECK_HASH_ALWAYS
+from gslib.hashing_helper import CHECK_HASH_IF_FAST_ELSE_FAIL
+from gslib.hashing_helper import CHECK_HASH_IF_FAST_ELSE_SKIP
+from gslib.hashing_helper import CHECK_HASH_NEVER
 from gslib.sig_handling import RegisterSignalHandler
 from gslib.util import EIGHT_MIB
 from gslib.util import IS_WINDOWS
@@ -98,7 +103,7 @@ _DETAILED_HELP_TEXT = ("""
   email address and the path to your private key file. To get these data, visit
   the `Google Developers Console <https://cloud.google.com/console#/project>`_,
   click on the project you are using, then click "APIs & auth", then click
-  "Credentials", then click "CREATE NEW CLIENT ID"; on the pop-up dialog box
+  "Credentials", then click "Create new Client ID"; on the pop-up dialog box
   select "Service account" and click "Create Client ID". This will download
   a private key file, which you should move to somewhere
   accessible from the machine where you run gsutil. Make sure to set its
@@ -189,6 +194,9 @@ _DETAILED_HELP_TEXT = ("""
       json_api_version
       parallel_composite_upload_component_size
       parallel_composite_upload_threshold
+      sliced_object_download_component_size
+      sliced_object_download_max_components
+      sliced_object_download_threshold
       parallel_process_count
       parallel_thread_count
       prefer_api
@@ -293,11 +301,9 @@ else:
 # revert DEFAULT_PARALLEL_COMPOSITE_UPLOAD_THRESHOLD value to '150M'.
 DEFAULT_PARALLEL_COMPOSITE_UPLOAD_THRESHOLD = '0'
 DEFAULT_PARALLEL_COMPOSITE_UPLOAD_COMPONENT_SIZE = '50M'
-
-CHECK_HASH_IF_FAST_ELSE_FAIL = 'if_fast_else_fail'
-CHECK_HASH_IF_FAST_ELSE_SKIP = 'if_fast_else_skip'
-CHECK_HASH_ALWAYS = 'always'
-CHECK_HASH_NEVER = 'never'
+DEFAULT_SLICED_OBJECT_DOWNLOAD_THRESHOLD = '150M'
+DEFAULT_SLICED_OBJECT_DOWNLOAD_COMPONENT_SIZE = '200M'
+DEFAULT_SLICED_OBJECT_DOWNLOAD_MAX_COMPONENTS = 4
 
 CONFIG_BOTO_SECTION_CONTENT = """
 [Boto]
@@ -433,8 +439,22 @@ CONFIG_INPUTLESS_GSUTIL_SECTION_CONTENT = """
 # Linux distributions to get crcmod included with the stock distribution. Once
 # that is done we will re-enable parallel composite uploads by default in
 # gsutil.
+#
+# Note: Parallel composite uploads should not be used with NEARLINE storage
+# class buckets, as doing this would incur an early deletion charge for each
+# component object.
 #parallel_composite_upload_threshold = %(parallel_composite_upload_threshold)s
 #parallel_composite_upload_component_size = %(parallel_composite_upload_component_size)s
+
+# 'sliced_object_download_threshold' and
+# 'sliced_object_download_component_size' have analogous functionality to
+# their respective parallel_composite_upload config values.
+# 'sliced_object_download_max_components' specifies the maximum number of 
+# slices to be used when performing a sliced object download. It is not
+# restricted by MAX_COMPONENT_COUNT.
+#sliced_object_download_threshold = %(sliced_object_download_threshold)s
+#sliced_object_download_component_size = %(sliced_object_download_component_size)s
+#sliced_object_download_max_components = %(sliced_object_download_max_components)s
 
 # 'use_magicfile' specifies if the 'file --mime-type <filename>' command should
 # be used to guess content types instead of the default filename extension-based
@@ -467,6 +487,8 @@ content_language = en
 # and are unable to install crcmod with the C-extension. CRC32c is the only
 # available integrity check for composite objects, and without the C-extension,
 # download performance can be significantly degraded by the digest computation.
+# This option is ignored for daisy-chain copies, which don't compute hashes but
+# instead (inexpensively) compare the cloud source and destination hashes.
 #check_hashes = if_fast_else_fail
 
 # The ability to specify an alternative JSON API version is primarily for cloud
@@ -491,6 +513,12 @@ content_language = en
            DEFAULT_PARALLEL_COMPOSITE_UPLOAD_THRESHOLD),
        'parallel_composite_upload_component_size': (
            DEFAULT_PARALLEL_COMPOSITE_UPLOAD_COMPONENT_SIZE),
+       'sliced_object_download_threshold': (
+           DEFAULT_PARALLEL_COMPOSITE_UPLOAD_THRESHOLD),
+       'sliced_object_download_component_size': (
+           DEFAULT_PARALLEL_COMPOSITE_UPLOAD_COMPONENT_SIZE),
+       'sliced_object_download_max_components': (
+           DEFAULT_SLICED_OBJECT_DOWNLOAD_MAX_COMPONENTS),
        'max_component_count': MAX_COMPONENT_COUNT}
 
 CONFIG_OAUTH2_CONFIG_CONTENT = """
@@ -752,23 +780,38 @@ class ConfigCommand(Command):
         - for OAUTH2_USER_ACCOUNT, walk the user through OAuth2 approval flow
           and produce a config with an oauth2_refresh_token credential.
         - for OAUTH2_SERVICE_ACCOUNT, prompt the user for OAuth2 for service
-          account email address and private key file (and password for that
-          file).
+          account email address and private key file (and if the file is a .p12
+          file, the password for that file).
     """
     # Collect credentials
     provider_map = {'aws': 'aws', 'google': 'gs'}
     uri_map = {'aws': 's3', 'google': 'gs'}
     key_ids = {}
     sec_keys = {}
+    service_account_key_is_json = False
     if cred_type == CredTypes.OAUTH2_SERVICE_ACCOUNT:
-      gs_service_client_id = raw_input('What is your service account email '
-                                       'address? ')
       gs_service_key_file = raw_input('What is the full path to your private '
                                       'key file? ')
-      gs_service_key_file_password = raw_input(
-          '\n'.join(textwrap.wrap(
-              'What is the password for your service key file [if you haven\'t '
-              'set one explicitly, leave this line blank]?')) + ' ')
+      # JSON files have the email address built-in and don't require a password.
+      try:
+        with open(gs_service_key_file, 'rb') as key_file_fp:
+          json.loads(key_file_fp.read())
+        service_account_key_is_json = True
+      except ValueError:
+        if not HAS_CRYPTO:
+          raise CommandException(
+              'Service account authentication via a .p12 file requires '
+              'either\nPyOpenSSL or PyCrypto 2.6 or later. Please install '
+              'either of these\nto proceed, use a JSON-format key file, or '
+              'configure a different type of credentials.')
+
+      if not service_account_key_is_json:
+        gs_service_client_id = raw_input('What is your service account email '
+                                         'address? ')
+        gs_service_key_file_password = raw_input(
+            '\n'.join(textwrap.wrap(
+                'What is the password for your service key file [if you '
+                'haven\'t set one explicitly, leave this line blank]?')) + ' ')
       self._CheckPrivateKeyFilePermissions(gs_service_key_file)
     elif cred_type == CredTypes.OAUTH2_USER_ACCOUNT:
       oauth2_client = oauth2_helper.OAuth2ClientFromBotoConfig(boto.config,
@@ -822,23 +865,24 @@ class ConfigCommand(Command):
     if cred_type == CredTypes.OAUTH2_SERVICE_ACCOUNT:
       config_file.write('# Google OAuth2 service account credentials '
                         '(for "gs://" URIs):\n')
-      config_file.write('gs_service_client_id = %s\n'
-                        % gs_service_client_id)
       config_file.write('gs_service_key_file = %s\n' % gs_service_key_file)
+      if not service_account_key_is_json:
+        config_file.write('gs_service_client_id = %s\n'
+                          % gs_service_client_id)
 
-      if not gs_service_key_file_password:
-        config_file.write(
-            '# If you would like to set your password, you can do so using\n'
-            '# the following commands (replaced with your information):\n'
-            '# "openssl pkcs12 -in cert1.p12 -out temp_cert.pem"\n'
-            '# "openssl pkcs12 -export -in temp_cert.pem -out cert2.p12"\n'
-            '# "rm -f temp_cert.pem"\n'
-            '# Your initial password is "notasecret" - for more information,'
-            '\n# please see http://www.openssl.org/docs/apps/pkcs12.html.\n')
-        config_file.write('#gs_service_key_file_password =\n\n')
-      else:
-        config_file.write('gs_service_key_file_password = %s\n\n'
-                          % gs_service_key_file_password)
+        if not gs_service_key_file_password:
+          config_file.write(
+              '# If you would like to set your password, you can do so using\n'
+              '# the following commands (replaced with your information):\n'
+              '# "openssl pkcs12 -in cert1.p12 -out temp_cert.pem"\n'
+              '# "openssl pkcs12 -export -in temp_cert.pem -out cert2.p12"\n'
+              '# "rm -f temp_cert.pem"\n'
+              '# Your initial password is "notasecret" - for more information,'
+              '\n# please see http://www.openssl.org/docs/apps/pkcs12.html.\n')
+          config_file.write('#gs_service_key_file_password =\n\n')
+        else:
+          config_file.write('gs_service_key_file_password = %s\n\n'
+                            % gs_service_key_file_password)
     elif cred_type == CredTypes.OAUTH2_USER_ACCOUNT:
       config_file.write(
           '# Google OAuth2 credentials (for "gs://" URIs):\n'
@@ -978,15 +1022,9 @@ class ConfigCommand(Command):
       else:
         self.RaiseInvalidArgumentException()
 
-    if has_e:
-      if has_a:
-        raise CommandException('Both -a and -e cannot be specified. Please see '
-                               '"gsutil help config" for more information.')
-      if not HAS_CRYPTO:
-        raise CommandException(
-            'Service account authentication requires either\nPyOpenSSL or '
-            'PyCrypto 2.6 or later. Please install either of these\nto proceed,'
-            ' or configure a different type of credentials.')
+    if has_e and has_a:
+      raise CommandException('Both -a and -e cannot be specified. Please see '
+                             '"gsutil help config" for more information.')
 
     if not scopes:
       scopes.append(SCOPE_FULL_CONTROL)

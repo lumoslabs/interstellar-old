@@ -3,7 +3,10 @@
 oauth2client.egg-info/
 build/
 dist/
-docs/
+
+# Documentation-related
+docs/_build
+/google_appengine/
 
 # Test files
 .tox/
@@ -12,3 +15,13 @@ docs/
 .coverage
 coverage.xml
 nosetests.xml
+htmlcov/
+
+# Files with private / local data
+scripts/local_test_setup
+tests/data/key.json
+tests/data/key.p12
+tests/data/user-key.json
+
+# PyCharm configuration:
+.idea

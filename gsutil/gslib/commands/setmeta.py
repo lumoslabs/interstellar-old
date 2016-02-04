@@ -27,13 +27,14 @@ from gslib.name_expansion import NameExpansionIterator
 from gslib.storage_url import StorageUrlFromString
 from gslib.translation_helper import CopyObjectMetadata
 from gslib.translation_helper import ObjectMetadataFromHeaders
+from gslib.translation_helper import PreconditionsFromHeaders
 from gslib.util import GetCloudApiInstance
 from gslib.util import NO_MAX
 from gslib.util import Retry
 
 
 _SYNOPSIS = """
-  gsutil setmeta [-n] -h [header:value|header] ... url...
+  gsutil setmeta -h [header:value|header] ... url...
 """
 
 _DETAILED_HELP_TEXT = ("""
@@ -67,39 +68,37 @@ _DETAILED_HELP_TEXT = ("""
       -h "Cache-Control:public, max-age=3600" \\
       -h "Content-Disposition" gs://bucket/*.html
 
+  You can also use the setmeta command to set custom metadata on an object:
+
+    gsutil setmeta -h "x-goog-meta-icecreamflavor:vanilla" gs://bucket/object
+
   See "gsutil help metadata" for details about how you can set metadata
   while uploading objects, what metadata fields can be set and the meaning of
   these fields, use of custom metadata, and how to view currently set metadata.
 
   NOTE: By default, publicly readable objects are served with a Cache-Control
-  header allowing such objects to be cached for 3600 seconds. If you need to
-  ensure that updates become visible immediately, you should set a Cache-Control
-  header of "Cache-Control:private, max-age=0, no-transform" on such objects.
-  You can do this with the command:
+  header allowing such objects to be cached for 3600 seconds. For more details
+  about this default behavior see the CACHE-CONTROL section of
+  "gsutil help metadata". If you need to ensure that updates become visible
+  immediately, you should set a Cache-Control header of "Cache-Control:private,
+  max-age=0, no-transform" on such objects.  You can do this with the command:
 
     gsutil setmeta -h "Content-Type:text/html" \\
       -h "Cache-Control:private, max-age=0, no-transform" gs://bucket/*.html
 
+  The setmeta command reads each object's current generation and metageneration
+  and uses those as preconditions unless they are otherwise specified by
+  top-level arguments. For example:
 
-<B>OPERATION COST</B>
-  This command uses four operations per URL (one to read the ACL, one to read
-  the current metadata, one to set the new metadata, and one to set the ACL).
+    gsutil -h "x-goog-if-metageneration-match:2" setmeta
+      -h "x-goog-meta-icecreamflavor:vanilla"
 
-  For cases where you want all objects to have the same ACL you can avoid half
-  these operations by setting a default ACL on the bucket(s) containing the
-  named objects, and using the setmeta -n option. See "help gsutil defacl".
-
+  will set the icecreamflavor:vanilla metadata if the current live object has a
+  metageneration of 2.
 
 <B>OPTIONS</B>
   -h          Specifies a header:value to be added, or header to be removed,
               from each named object.
-  -n          Causes the operations for reading and writing the ACL to be
-              skipped. This halves the number of operations performed per
-              request, improving the speed and reducing the cost of performing
-              the operations. This option makes sense for cases where you want
-              all objects to have the same ACL, for which you have set a default
-              ACL on the bucket(s) containing the objects. See "help gsutil
-              defacl".
 """)
 
 # Setmeta assumes a header-like model which doesn't line up with the JSON way
@@ -130,7 +129,7 @@ class SetMetaCommand(Command):
       usage_synopsis=_SYNOPSIS,
       min_args=1,
       max_args=NO_MAX,
-      supported_sub_args='h:nrR',
+      supported_sub_args='h:rR',
       file_url_ok=False,
       provider_url_ok=False,
       urls_start_arg=1,
@@ -155,12 +154,7 @@ class SetMetaCommand(Command):
     headers = []
     if self.sub_opts:
       for o, a in self.sub_opts:
-        if o == '-n':
-          self.logger.warning(
-              'Warning: gsutil setmeta -n is now on by default, and will be '
-              'removed in the future.\nPlease use gsutil acl set ... to set '
-              'canned ACLs.')
-        elif o == '-h':
+        if o == '-h':
           if 'x-goog-acl' in a or 'x-amz-acl' in a:
             raise CommandException(
                 'gsutil setmeta no longer allows canned ACLs. Use gsutil acl '
@@ -180,6 +174,8 @@ class SetMetaCommand(Command):
 
     # Used to track if any objects' metadata failed to be set.
     self.everything_set_okay = True
+
+    self.preconditions = PreconditionsFromHeaders(self.headers)
 
     name_expansion_iterator = NameExpansionIterator(
         self.command_name, self.debug, self.logger, self.gsutil_api,
@@ -222,8 +218,12 @@ class SetMetaCommand(Command):
         fields=fields)
 
     preconditions = Preconditions(
-        gen_match=cloud_obj_metadata.generation,
-        meta_gen_match=cloud_obj_metadata.metageneration)
+        gen_match=self.preconditions.gen_match,
+        meta_gen_match=self.preconditions.meta_gen_match)
+    if preconditions.gen_match is None:
+      preconditions.gen_match = cloud_obj_metadata.generation
+    if preconditions.meta_gen_match is None:
+      preconditions.meta_gen_match = cloud_obj_metadata.metageneration
 
     # Patch handles the patch semantics for most metadata, but we need to
     # merge the custom metadata field manually.
@@ -238,6 +238,9 @@ class SetMetaCommand(Command):
       CopyObjectMetadata(patch_obj_metadata, cloud_obj_metadata,
                          override=True)
       patch_obj_metadata = cloud_obj_metadata
+      # Patch body does not need the object generation and metageneration.
+      patch_obj_metadata.generation = None
+      patch_obj_metadata.metageneration = None
 
     gsutil_api.PatchObjectMetadata(
         exp_src_url.bucket_name, exp_src_url.object_name, patch_obj_metadata,

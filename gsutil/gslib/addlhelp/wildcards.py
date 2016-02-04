@@ -58,16 +58,20 @@ _DETAILED_HELP_TEXT = ("""
 
 
 <B>BUCKET WILDCARDS</B>
-  You can specify wildcards for bucket names. For example:
+  You can specify wildcards for bucket names within a single project. For
+  example:
 
     gsutil ls gs://data*.example.com
 
   will list the contents of all buckets whose name starts with "data" and
-  ends with ".example.com".
+  ends with ".example.com" in the default project. The -p option can be used
+  to specify a project other than the default.  For example:
+
+    gsutil ls -p other-project gs://data*.example.com
 
   You can also combine bucket and object name wildcards. For example this
   command will remove all ".txt" files in any of your Google Cloud Storage
-  buckets:
+  buckets in the default project:
 
     gsutil rm gs://*/**.txt
 
@@ -94,6 +98,22 @@ _DETAILED_HELP_TEXT = ("""
     gs://bucket/[a-m]??.j*g
 
 
+<B>DIFFERENT BEHAVIOR FOR "DOT" FILES IN LOCAL FILE SYSTEM</B>
+  Per standard Unix behavior, the wildcard "*" only matches files that don't
+  start with a "." character (to avoid confusion with the "." and ".."
+  directories present in all Unix directories). gsutil provides this same
+  behavior when using wildcards over a file system URI, but does not provide
+  this behavior over cloud URIs. For example, the following command will copy
+  all objects from gs://bucket1 to gs://bucket2:
+
+    gsutil cp gs://bucket1/* gs://bucket2
+
+  but the following command will copy only files that don't start with a "."
+  from the directory "dir" to gs://bucket1:
+
+    gsutil cp dir/* gs://bucket1
+
+
 <B>EFFICIENCY CONSIDERATION: USING WILDCARDS OVER MANY OBJECTS</B>
   It is more efficient, faster, and less network traffic-intensive
   to use wildcards that have a non-wildcard object-name prefix, like:
@@ -104,12 +124,12 @@ _DETAILED_HELP_TEXT = ("""
 
     gs://bucket/*abc.txt
 
-  This is because the request for "gs://bucket/abc*.txt" asks the server
-  to send back the subset of results whose object names start with "abc",
-  and then gsutil filters the result list for objects whose name ends with
-  ".txt". In contrast, "gs://bucket/*abc.txt" asks the server for the complete
-  list of objects in the bucket and then filters for those objects whose name
-  ends with "abc.txt". This efficiency consideration becomes increasingly
+  This is because the request for "gs://bucket/abc*.txt" asks the server to send
+  back the subset of results whose object name start with "abc" at the bucket
+  root, and then gsutil filters the result list for objects whose name ends with
+  ".txt".  In contrast, "gs://bucket/*abc.txt" asks the server for the complete
+  list of objects in the bucket root, and then filters for those objects whose
+  name ends with "abc.txt". This efficiency consideration becomes increasingly
   noticeable when you use buckets containing thousands or more objects. It is
   sometimes possible to set up the names of your objects to fit with expected
   wildcard matching patterns, to take advantage of the efficiency of doing

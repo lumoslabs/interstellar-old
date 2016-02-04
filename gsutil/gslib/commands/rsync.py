@@ -31,11 +31,13 @@ from boto import config
 import crcmod
 
 from gslib import copy_helper
+from gslib.bucket_listing_ref import BucketListingObject
 from gslib.cloud_api import NotFoundException
 from gslib.command import Command
 from gslib.command import DummyArgChecker
 from gslib.command_argument import CommandArgument
 from gslib.copy_helper import CreateCopyHelperOpts
+from gslib.copy_helper import SkipUnsupportedObjectError
 from gslib.cs_api_map import ApiSelector
 from gslib.exception import CommandException
 from gslib.hashing_helper import CalculateB64EncodedCrc32cFromContents
@@ -54,7 +56,7 @@ from gslib.wildcard_iterator import CreateWildcardIterator
 
 
 _SYNOPSIS = """
-  gsutil rsync [-c] [-C] [-d] [-e] [-n] [-p] [-r] [-x] src_url dst_url
+  gsutil rsync [-c] [-C] [-d] [-e] [-n] [-p] [-r] [-U] [-x] src_url dst_url
 """
 
 _DETAILED_HELP_TEXT = ("""
@@ -117,11 +119,53 @@ _DETAILED_HELP_TEXT = ("""
   workstation.
 
 
+<B>BE CAREFUL WHEN USING -d OPTION!</B>
+  The rsync -d option is very useful and commonly used, because it provides a
+  means of making the contents of a destination bucket or directory match those
+  of a source bucket or directory. However, please exercise caution when you
+  use this option: It's possible to delete large amounts of data accidentally
+  if, for example, you erroneously reverse source and destination. For example,
+  if you meant to synchronize a local directory from a bucket in the cloud but
+  instead run the command:
+
+    gsutil -m rsync -r -d ./your-dir gs://your-bucket
+
+  and your-dir is currently empty, you will quickly delete all of the objects in
+  gs://your-bucket.
+
+  You can also cause large amounts of data to be lost quickly by specifying a
+  subdirectory of the destination as the source of an rsync. For example, the
+  command:
+
+    gsutil -m rsync -r -d gs://your-bucket/data gs://your-bucket
+
+  would cause most or all of the objects in gs://your-bucket to be deleted
+  (some objects may survive if there are any with names that sort lower than
+  "data" under gs://your-bucket/data).
+
+  In addition to paying careful attention to the source and destination you
+  specify with the rsync command, there are two more safety measures your can
+  take when using gsutil rsync -d:
+
+    1. Try running the command with the rsync -n option first, to see what it
+       would do without actually performing the operations. For example, if
+       you run the command:
+
+         gsutil -m rsync -r -d -n gs://your-bucket/data gs://your-bucket
+       
+       it will be immediately evident that running that command without the -n
+       option would cause many objects to be deleted.
+
+    2. Enable object versioning in your bucket, which will allow you to restore
+       objects if you accidentally delete them. For more details see
+       "gsutil help versions".
+
+
 <B>IMPACT OF BUCKET LISTING EVENTUAL CONSISTENCY</B>
   The rsync command operates by listing the source and destination URLs, and
   then performing copy and remove operations according to the differences
   between these listings. Because bucket listing is eventually (not strongly)
-  consistent, if you upload new objets or delete objects from a bucket and then
+  consistent, if you upload new objects or delete objects from a bucket and then
   immediately run gsutil rsync with that bucket as the source or destination,
   it's possible the rsync command will not see the recent updates and thus
   synchronize incorrectly. You can rerun the rsync operation again later to
@@ -210,8 +254,13 @@ _DETAILED_HELP_TEXT = ("""
      match those of the source object (it can't; timestamp setting is not
      allowed by the GCS API).
 
-  2. The gsutil rsync command ignores versioning, synchronizing only the live
-     object versions in versioned buckets.
+  2. The gsutil rsync command considers only the current object generations in
+     the source and destination buckets when deciding what to copy / delete. If
+     versioning is enabled in the destination bucket then gsutil rsync's
+     overwriting or deleting objects will end up creating versions, but the
+     command doesn't try to make the archived generations match in the source
+     and destination buckets.
+
 
 
 <B>OPTIONS</B>
@@ -229,7 +278,10 @@ _DETAILED_HELP_TEXT = ("""
                 file name) gsutil will print an error message and abort.
 
   -d            Delete extra files under dst_url not found under src_url. By
-                default extra files are not deleted.
+                default extra files are not deleted. Note: this option can
+                delete data quickly if you specify the wrong source/destination
+                combination. See the help section above,
+                "BE CAREFUL WHEN USING -d OPTION!".
 
   -e            Exclude symlinks. When specified, symbolic links will be
                 ignored.
@@ -238,7 +290,15 @@ _DETAILED_HELP_TEXT = ("""
                 what would be copied or deleted without actually doing any
                 copying/deleting.
 
-  -p            Causes ACLs to be preserved when synchronizing in the cloud.
+  -p            Causes ACLs to be preserved when objects are copied. Note that
+                rsync will decide whether or not to perform a copy based only
+                on object size and checksum, not current ACL state. Thus, if
+                the source and destination differ in size or checksum and you
+                run gsutil rsync -p, the file will be copied and ACL preserved.
+                However, if the source and destination don't differ in size or
+                checksum but have different ACLs, running gsutil rsync -p will
+                have no effect.
+
                 Note that this option has performance and cost implications when
                 using the XML API, as it requires separate HTTP calls for
                 interacting with ACLs. The performance issue can be mitigated to
@@ -251,27 +311,32 @@ _DETAILED_HELP_TEXT = ("""
                 end up with the same ACL by setting a default object ACL on that
                 bucket instead of using rsync -p. See 'help gsutil defacl'.
 
-  -R, -r        Causes directories, buckets, and bucket subdirectories to be
-                synchronized recursively. If you neglect to use this option
-                gsutil will make only the top-level directory in the source
-                and destination URLs match, skipping any sub-directories.
+  -R, -r        The -R and -r options are synonymous. Causes directories,
+                buckets, and bucket subdirectories to be synchronized
+                recursively. If you neglect to use this option gsutil will make
+                only the top-level directory in the source and destination URLs
+                match, skipping any sub-directories.
+
+  -U            Skip objects with unsupported object types instead of failing.
+                Unsupported object types are Amazon S3 Objects in the GLACIER
+                storage class.
 
   -x pattern    Causes files/objects matching pattern to be excluded, i.e., any
                 matching files/objects will not be copied or deleted. Note that
                 the pattern is a Python regular expression, not a wildcard (so,
                 matching any string ending in 'abc' would be specified using
-                '.*abc' rather than '*abc'). Note also that the exclude path is
+                '.*abc$' rather than '*abc'). Note also that the exclude path is
                 always relative (similar to Unix rsync or tar exclude options).
                 For example, if you run the command:
 
-                  gsutil rsync -x 'data./.*\\.txt' dir gs://my-bucket
+                  gsutil rsync -x 'data./.*\\.txt$' dir gs://my-bucket
 
                 it will skip the file dir/data1/a.txt.
 
                 You can use regex alternation to specify multiple exclusions,
                 for example:
 
-                  gsutil rsync -x '.*\\.txt|.*\\.jpg' dir gs://my-bucket
+                  gsutil rsync -x '.*\\.txt$|.*\\.jpg$' dir gs://my-bucket
 """)
 
 
@@ -423,6 +488,26 @@ def _ListUrlRootFunc(cls, args_tuple, thread_state=None):
   out_file.close()
 
 
+def _LocalDirIterator(base_url):
+  """A generator that yields a BLR for each file in a local directory.
+
+     We use this function instead of WildcardIterator for listing a local
+     directory without recursion, because the glob.globi implementation called
+     by WildcardIterator skips "dot" files (which we don't want to do when
+     synchronizing to or from a local directory).
+
+  Args:
+    base_url: URL for the directory over which to iterate.
+
+  Yields:
+    BucketListingObject for each file in the directory.
+  """
+  for filename in os.listdir(base_url.object_name):
+    filename = os.path.join(base_url.object_name, filename)
+    if os.path.isfile(filename):
+      yield BucketListingObject(StorageUrlFromString(filename), None)
+
+
 def _FieldedListingIterator(cls, gsutil_api, base_url_str, desc):
   """Iterator over base_url_str formatting output per _BuildTmpOutputLine.
 
@@ -435,16 +520,22 @@ def _FieldedListingIterator(cls, gsutil_api, base_url_str, desc):
   Yields:
     Output line formatted per _BuildTmpOutputLine.
   """
-  if cls.recursion_requested:
-    wildcard = '%s/**' % base_url_str.rstrip('/\\')
+  base_url = StorageUrlFromString(base_url_str)
+  if base_url.scheme == 'file' and not cls.recursion_requested:
+    iterator = _LocalDirIterator(base_url)
   else:
-    wildcard = '%s/*' % base_url_str.rstrip('/\\')
+    if cls.recursion_requested:
+      wildcard = '%s/**' % base_url_str.rstrip('/\\')
+    else:
+      wildcard = '%s/*' % base_url_str.rstrip('/\\')
+    iterator = CreateWildcardIterator(
+        wildcard, gsutil_api, debug=cls.debug,
+        project_id=cls.project_id).IterObjects(
+            # Request just the needed fields, to reduce bandwidth usage.
+            bucket_listing_fields=['crc32c', 'md5Hash', 'name', 'size'])
+
   i = 0
-  for blr in CreateWildcardIterator(
-      wildcard, gsutil_api, debug=cls.debug,
-      project_id=cls.project_id).IterObjects(
-          # Request just the needed fields, to reduce bandwidth usage.
-          bucket_listing_fields=['crc32c', 'md5Hash', 'name', 'size']):
+  for blr in iterator:
     # Various GUI tools (like the GCS web console) create placeholder objects
     # ending with '/' when the user creates an empty directory. Normally these
     # tools should delete those placeholders once objects have been written
@@ -455,10 +546,8 @@ def _FieldedListingIterator(cls, gsutil_api, base_url_str, desc):
     # local directory "mydata" exists).
     url = blr.storage_url
     if IsCloudSubdirPlaceholder(url, blr=blr):
-      cls.logger.info('Skipping cloud sub-directory placeholder object (%s) '
-                      'because such objects aren\'t needed in (and would '
-                      'interfere with) directories in the local file system',
-                      url)
+      # We used to output the message 'Skipping cloud sub-directory placeholder
+      # object...' but we no longer do so because it caused customer confusion.
       continue
     if (cls.exclude_symlinks and url.IsFileUrl()
         and os.path.islink(url.object_name)):
@@ -558,7 +647,7 @@ def _BatchSort(in_iter, out_file):
       output_chunk = io.open('%s-%06i' % (out_file.name, len(chunk_files)),
                              mode='w+', encoding=UTF8)
       chunk_files.append(output_chunk)
-      output_chunk.writelines(unicode(''.join(current_chunk)))
+      output_chunk.write(unicode(''.join(current_chunk)))
       output_chunk.flush()
       output_chunk.seek(0)
     out_file.writelines(heapq.merge(*chunk_files))
@@ -816,9 +905,14 @@ def _RsyncFunc(cls, diff_to_apply, thread_state=None):
     if cls.dryrun:
       cls.logger.info('Would copy %s to %s', src_url, dst_url)
     else:
-      copy_helper.PerformCopy(cls.logger, src_url, dst_url, gsutil_api, cls,
-                              _RsyncExceptionHandler,
-                              headers=cls.headers)
+      try:
+        copy_helper.PerformCopy(cls.logger, src_url, dst_url, gsutil_api, cls,
+                                _RsyncExceptionHandler,
+                                headers=cls.headers)
+      except SkipUnsupportedObjectError, e:
+        cls.logger.info('Skipping item %s with unsupported object type %s',
+                        src_url, e.unsupported_type)
+
   else:
     raise CommandException('Got unexpected DiffAction (%d)'
                            % diff_to_apply.diff_action)
@@ -847,7 +941,7 @@ class RsyncCommand(Command):
       usage_synopsis=_SYNOPSIS,
       min_args=2,
       max_args=2,
-      supported_sub_args='cCdenprRx:',
+      supported_sub_args='cCdenprRUx:',
       file_url_ok=True,
       provider_url_ok=False,
       urls_start_arg=0,
@@ -941,6 +1035,7 @@ class RsyncCommand(Command):
     self.compute_file_checksums = False
     self.dryrun = False
     self.exclude_pattern = None
+    self.skip_unsupported_objects = False
     # self.recursion_requested is initialized in command.py (so it can be
     # checked in parent class for all commands).
 
@@ -963,6 +1058,8 @@ class RsyncCommand(Command):
           preserve_acl = True
         elif o == '-r' or o == '-R':
           self.recursion_requested = True
+        elif o == '-U':
+          self.skip_unsupported_objects = True
         elif o == '-x':
           if not a:
             raise CommandException('Invalid blank exclude filter')
@@ -970,4 +1067,6 @@ class RsyncCommand(Command):
             self.exclude_pattern = re.compile(a)
           except re.error:
             raise CommandException('Invalid exclude filter (%s)' % a)
-    return CreateCopyHelperOpts(preserve_acl=preserve_acl)
+    return CreateCopyHelperOpts(
+        preserve_acl=preserve_acl,
+        skip_unsupported_objects=self.skip_unsupported_objects)

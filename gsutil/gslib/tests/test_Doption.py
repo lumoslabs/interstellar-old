@@ -16,6 +16,8 @@
 
 from __future__ import absolute_import
 
+import platform
+
 import gslib
 from gslib.cs_api_map import ApiSelector
 import gslib.tests.testcase as testcase
@@ -46,6 +48,19 @@ class TestDOption(testcase.GsUtilIntegrationTestCase):
         self.assertIn('Comparing local vs cloud md5-checksum for', stderr)
         self.assertIn('total_bytes_transferred: %d' % len(file_contents),
                       stderr)
+
+  def test_minus_D_perf_trace_cp(self):
+    """Test upload and download with a sample perf trace token."""
+    file_name = 'bar'
+    fpath = self.CreateTempFile(file_name=file_name, contents='foo')
+    bucket_uri = self.CreateBucket()
+    stderr = self.RunGsUtil(['-D', '--perf-trace-token=123', 'cp', fpath,
+                             suri(bucket_uri)], return_stderr=True)
+    self.assertIn('\'cookie\': \'123\'', stderr)
+    stderr2 = self.RunGsUtil(['-D', '--perf-trace-token=123', 'cp',
+                              suri(bucket_uri, file_name), fpath],
+                             return_stderr=True)
+    self.assertIn('\'cookie\': \'123\'', stderr2)
 
   def test_minus_D_resumable_upload(self):
     fpath = self.CreateTempFile(contents='a1b2c3d4')
@@ -88,8 +103,9 @@ class TestDOption(testcase.GsUtilIntegrationTestCase):
       self.assertIn('header: x-goog-hash: md5=eB5eJF1ptWaXm4bijSPyxw==', stderr)
     elif self.test_api == ApiSelector.JSON:
       self.assertRegexpMatches(
-          stderr, '.*GET.*b/%s/o/%s.*user-agent:.*gsutil/%s' %
-          (key_uri.bucket_name, key_uri.object_name, gslib.VERSION))
+          stderr, '.*GET.*b/%s/o/%s.*user-agent:.*gsutil/%s.Python/%s' %
+          (key_uri.bucket_name, key_uri.object_name, gslib.VERSION,
+           platform.python_version()))
       self.assertIn(('header: Cache-Control: no-cache, no-store, max-age=0, '
                      'must-revalidate'), stderr)
       self.assertIn("md5Hash: u'eB5eJF1ptWaXm4bijSPyxw=='", stderr)

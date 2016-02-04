@@ -35,15 +35,16 @@ management tasks, including:
 """
 
 requires = [
-    'boto==2.30.0',
+    'boto==2.38.0',
     'crcmod>=1.7',
-    'gcs-oauth2-boto-plugin>=1.8',
+    'gcs-oauth2-boto-plugin>=1.9',
+    'google-apitools==0.4.12',
     'httplib2>=0.8',
-    'oauth2client>=1.4.4',
+    'oauth2client>=1.5.2',
     'pyOpenSSL>=0.13',
     'python-gflags>=2.0',
     'retry_decorator>=1.0.0',
-    'six>=1.8.0',
+    'six>=1.9.0',
     # Not using 1.02 because of:
     #   https://code.google.com/p/socksipy-branch/issues/detail?id=3
     'SocksiPy-branch==1.01',
@@ -53,7 +54,7 @@ dependency_links = [
     # Note: this commit ID should be kept in sync with the 'third_party/boto'
     # entry in 'git submodule status'.
     # pylint: disable=line-too-long
-    'https://github.com/boto/boto/archive/34e0dcfaa778ee469ca08ae487a0bd4021a8e0da.tar.gz#egg=boto-2.30.0',
+    'https://github.com/boto/boto/archive/cb8aeec987ddcd5fecd206e38777b9a15cb0bcab.tar.gz#egg=boto-2.38.0',
 ]
 
 CURDIR = os.path.abspath(os.path.dirname(__file__))
