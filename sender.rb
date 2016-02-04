@@ -5,12 +5,12 @@ require 'csv'
 require 'yaml'
 
 CONFIG = YAML.load_file('./secrets/secrets.yml')
-datefile = "./lastdate"
+datefile = './lastdate'
 default_days_back = 7
 
 class Slack
   def self.notify(message)
-    RestClient.post CONFIG["slack_url"], {
+    RestClient.post CONFIG['slack_url'], {
       payload: message.to_json
     },
     content_type: :json,
@@ -27,7 +27,7 @@ class Review
 
   def self.send_reviews_from_date(date, datefile)
     messages = collection.select do |r|
-      r.submitted_at && r.submitted_at > date && (@@ratings[r.rate - 1] += 1) && (r.title || r.text) && r.lang == "en"
+      r.submitted_at && r.submitted_at > date && (@@ratings[r.rate - 1] += 1) && (r.title || r.text) && r.lang == 'en'
     end.sort_by do |r|
       r.submitted_at
     end.map do |r|
@@ -39,7 +39,7 @@ class Review
       Slack.notify({
         text: [
           "#{ratings_sum} new Play Store #{ratings_sum == 1 ? 'rating' : 'ratings'}!",
-          @@ratings.map.with_index{ |x, i| "★" * (i + 1) + "☆" * (4 - i) + " #{x}" }.reverse,
+          @@ratings.map.with_index{ |x, i| '★' * (i + 1) + '☆' * (4 - i) + " #{x}" }.reverse,
           "#{(@@ratings.map.with_index{ |x, i| x * (i + 1) }.reduce(:+).to_f / ratings_sum).round(3)} average rating\n",
           "#{messages.length} new Play Store #{messages.length == 1 ? 'review' : 'reviews'}!"
         ].join("\n"),
@@ -76,13 +76,13 @@ class Review
   def build_message
     colors = ['danger', '#D4542C', 'warning', '#8BA24B', 'good']
     date = if edited
-             "#{original_submitted_at.strftime("%Y.%m.%d at %H:%M")}, edited on #{submitted_at.strftime("%Y.%m.%d at %H:%M")}"
+             "#{original_submitted_at.strftime('%Y.%m.%d at %H:%M')}, edited on #{submitted_at.strftime('%Y.%m.%d at %H:%M')}"
            else
-             "#{submitted_at.strftime("%Y.%m.%d at %H:%M")}"
+             "#{submitted_at.strftime('%Y.%m.%d at %H:%M')}"
            end
 
-    stars = "★" * rate + "☆" * (5 - rate)
-    for_version = version ? "for #{version} " : ""
+    stars = '★' * rate + '☆' * (5 - rate)
+    for_version = version ? "for #{version} " : ''
 
     {
       fallback: [
@@ -100,23 +100,30 @@ class Review
         text,
         "_#{for_version}using #{device} on #{date}_ · <#{url}|Permalink>"
       ].join("\n"),
-      mrkdwn_in: ["text"]
+      mrkdwn_in: ['text']
     }
   end
 end
 
 start_date = [Time.at(File.exists?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - default_days_back + Rational(4, 24)].max
 
+system 'gsutil/gsutil update'
+system 'BOTO_PATH=./secrets/.boto gsutil/gsutil cp gs://play_public/supported_devices.csv .'
+
 csv_file_names = []
 date = start_date
 while date <= Date.today
-  file_date = date.strftime("%Y%m")
+  file_date = date.strftime('%Y%m')
   csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
-  system "gsutil/gsutil update"
   if system "BOTO_PATH=./secrets/.boto gsutil/gsutil cp -r gs://#{CONFIG["app_repo"]}/reviews/#{csv_file_name} ."
     csv_file_names.push(csv_file_name)
   end
   date = date - date.day + 1 >> 1
+end
+
+device = Hash.new
+CSV.foreach('supported_devices.csv', encoding: 'bom|utf-16le:utf-8', headers: true) do |row|
+  device[row['Device']] = row['Model'] || row['Device'] if row['Device']
 end
 
 csv_file_names.each do |csv_file_name|
@@ -130,7 +137,7 @@ csv_file_names.each do |csv_file_name|
         edited: (row['Review Submit Date and Time'] != row['Review Last Update Date and Time']),
         original_submitted_at: row['Review Submit Date and Time'],
         rate: row['Star Rating'],
-        device: row['Device'],
+        device: device[row['Device']],
         url: row['Review Link'],
         version: row['App Version Code'],
         lang: row['Reviewer Language']
