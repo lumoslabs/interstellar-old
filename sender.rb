@@ -74,7 +74,7 @@ class Review
 
     {
       fallback: [stars, title, text, footer, url].join("\n"),
-      color: ['danger', '#D4542C', 'warning', '#8BA24B', 'good'][rate - 1],
+      color: ['#D36259', '#EF7E14', '#FFC105', '#BFD047', '#0E9D58'][rate - 1],
       author_name: stars,
       title: title,
       title_link: url,
