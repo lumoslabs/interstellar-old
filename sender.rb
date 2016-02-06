@@ -5,8 +5,8 @@ require 'csv'
 require 'yaml'
 
 CONFIG = YAML.load_file('./secrets/secrets.yml')
-datefile = './lastdate'
-default_days_back = 7
+datefile = CONFIG['date_file'] || './lastdate'
+default_days_back = CONFIG['days_back'] || 7
 
 class Slack
   def self.notify(message)
@@ -26,13 +26,7 @@ class Review
   end
 
   def self.send_reviews_from_date(date, datefile)
-    messages = collection.select do |r|
-      r.submitted_at && r.submitted_at > date && (@@ratings[r.rate - 1] += 1) && (r.title || r.text) && r.lang == 'en'
-    end.sort_by do |r|
-      r.submitted_at
-    end.map do |r|
-      r.build_message
-    end
+    messages = collection.select { |r| r.submitted_at && r.submitted_at > date && (@@ratings[r.rate - 1] += 1) && (r.title || r.text) && r.lang == 'en' }.sort_by(&:submitted_at).map(&:build_message)
 
     ratings_sum = @@ratings.reduce(:+)
     if ratings_sum > 0
@@ -54,8 +48,8 @@ class Review
   attr_accessor :text, :title, :submitted_at, :original_submitted_at, :rate, :device, :url, :version, :edited, :lang
 
   def initialize data = {}
-    @text = data[:text] ? data[:text] : nil
-    @title = data[:title] ? data[:title] : nil
+    @text = data[:text]
+    @title = data[:title]
 
     begin
       @submitted_at = DateTime.parse(data[:submitted_at])
@@ -66,7 +60,7 @@ class Review
     rescue ArgumentError
     end
     @rate = data[:rate].to_i
-    @device = data[:device] ? data[:device] : nil
+    @device = data[:device]
     @url = data[:url]
     @version = data[:version] ? "v#{data[:version]}" : nil
     @edited = data[:edited]
@@ -74,73 +68,71 @@ class Review
   end
 
   def build_message
-    colors = ['danger', '#D4542C', 'warning', '#8BA24B', 'good']
-    date = if edited
-             "#{original_submitted_at.strftime('%Y.%m.%d at %H:%M')}, edited on #{submitted_at.strftime('%Y.%m.%d at %H:%M')}"
-           else
-             "#{submitted_at.strftime('%Y.%m.%d at %H:%M')}"
-           end
-
+    date = (edited ? "#{original_submitted_at.strftime('%Y.%m.%d at %H:%M')}, edited on " : '') + submitted_at.strftime('%Y.%m.%d at %H:%M')
     stars = '★' * rate + '☆' * (5 - rate)
-    for_version = version ? "for #{version} " : ''
+    footer = (version ? "for #{version} " : '') +"using #{device} on #{date}"
 
     {
-      fallback: [
-        stars,
-        title,
-        text,
-        "#{for_version}using #{device} on #{date}",
-        url
-      ].join("\n"),
-      color: colors[rate - 1],
+      fallback: [stars, title, text, footer, url].join("\n"),
+      color: ['danger', '#D4542C', 'warning', '#8BA24B', 'good'][rate - 1],
       author_name: stars,
       title: title,
       title_link: url,
-      text: [
-        text,
-        "_#{for_version}using #{device} on #{date}_ · <#{url}|Permalink>"
-      ].join("\n"),
+      text: "#{text}\n_#{footer}_ · <#{url}|Permalink>",
       mrkdwn_in: ['text']
     }
   end
 end
 
-start_date = [Time.at(File.exists?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - default_days_back + Rational(4, 24)].max
+def gsutil_sync(file_name, remote_path, local_path)
+  # Only checks file sizes, not contents
+  gsutil = 'BOTO_PATH=./secrets/.boto gsutil/gsutil'
+  remote = "#{remote_path}/#{file_name}"
+  local = "#{local_path}/#{file_name}"
+  system "#{gsutil} cp #{remote} #{local}" if !File.exist?(local) || File.stat(local).size != `#{gsutil} du #{remote}`.to_i
+end
+
+start_date = [Time.at(File.exist?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - default_days_back + Rational(4, 24)].max
 
 system 'gsutil/gsutil update'
-system 'BOTO_PATH=./secrets/.boto gsutil/gsutil cp gs://play_public/supported_devices.csv .'
+gsutil_sync('supported_devices.csv', 'gs://play_public', '.')
 
 csv_file_names = []
 date = start_date
 while date <= Date.today
   file_date = date.strftime('%Y%m')
   csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
-  if system "BOTO_PATH=./secrets/.boto gsutil/gsutil cp -r gs://#{CONFIG["app_repo"]}/reviews/#{csv_file_name} ."
-    csv_file_names.push(csv_file_name)
-  end
+  gsutil_sync(csv_file_name, "gs://#{CONFIG["app_repo"]}/reviews", '.')
+  csv_file_names.push(csv_file_name) if File.exist?(csv_file_name)
   date = date - date.day + 1 >> 1
 end
 
 device = Hash.new
-CSV.foreach('supported_devices.csv', encoding: 'bom|utf-16le:utf-8', headers: true) do |row|
-  device[row['Device']] = row['Model'] || row['Device'] if row['Device']
+CSV.foreach('supported_devices.csv', :encoding => 'bom|utf-16le:utf-8', :headers => true, :header_converters => :symbol) do |row|
+  name = row[:marketing_name] || row[:model] || row[:device]
+  if device[row[:device]]
+    device[row[:device]] = "#{device[row[:device]]}/#{name}" if device[row[:device]].index(name).nil?
+  else
+    device[row[:device]] = !row[:retail_branding].nil? && name.downcase.tr('^a-z0-9', '').index(row[:retail_branding].downcase.tr('^a-z0-9', '')).nil? ? "#{row[:retail_branding]} #{name}" : name
+  end
+  device[row[:device]] = device[row[:device]].gsub('\t', '').gsub("\\'", "'").gsub('\\\\', '/').gsub(/(\\x[\da-f]{2}+)/) { [$1.tr('^0-9a-f','')].pack('H*').force_encoding('utf-8') }
 end
 
 csv_file_names.each do |csv_file_name|
-  CSV.foreach(csv_file_name, encoding: 'bom|utf-16le:utf-8', headers: true) do |row|
+  CSV.foreach(csv_file_name, :encoding => 'bom|utf-16le:utf-8', :headers => true, :header_converters => :symbol) do |row|
     # If there is no reply - push this review
-    if row['Developer Reply Date and Time'].nil?
+    if row[:developer_reply_date_and_time].nil?
       Review.collection << Review.new({
-        text: row['Review Text'],
-        title: row['Review Title'],
-        submitted_at: row['Review Last Update Date and Time'],
-        edited: (row['Review Submit Date and Time'] != row['Review Last Update Date and Time']),
-        original_submitted_at: row['Review Submit Date and Time'],
-        rate: row['Star Rating'],
-        device: device[row['Device']],
-        url: row['Review Link'],
-        version: row['App Version Code'],
-        lang: row['Reviewer Language']
+        text: row[:review_text],
+        title: row[:review_title],
+        submitted_at: row[:review_last_update_date_and_time],
+        edited: (row[:review_submit_date_and_time] != row[:review_last_update_date_and_time]),
+        original_submitted_at: row[:review_submit_date_and_time],
+        rate: row[:star_rating],
+        device: device[row[:device]] ? device[row[:device]].downcase.tr('^a-z0-9', '').index(row[:device].downcase.tr('^a-z0-9', '')).nil? ? "#{device[row[:device]]} (#{row[:device]})" : device[row[:device]] : row[:device],
+        url: row[:review_link],
+        version: row[:app_version_name] || row[:app_version_code],
+        lang: row[:reviewer_language]
       })
     end
   end
