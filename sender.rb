@@ -45,7 +45,7 @@ class Review
     end
   end
 
-  attr_accessor :text, :title, :submitted_at, :original_submitted_at, :rate, :device, :url, :version, :edited, :lang
+  attr_accessor :text, :title, :submitted_at, :original_submitted_at, :rate, :device, :url, :version, :lang
 
   def initialize data = {}
     @text = data[:text]
@@ -63,12 +63,11 @@ class Review
     @device = data[:device]
     @url = data[:url]
     @version = data[:version] ? "v#{data[:version]}" : nil
-    @edited = data[:edited]
     @lang = data[:lang]
   end
 
   def build_message
-    date = (edited ? "#{original_submitted_at.strftime('%Y.%m.%d at %H:%M')}, edited on " : '') + submitted_at.strftime('%Y.%m.%d at %H:%M')
+    date = (original_submitted_at - submitted_at > 1 ? "#{original_submitted_at.strftime('%Y.%m.%d at %H:%M')}, edited on " : '') + submitted_at.strftime('%Y.%m.%d at %H:%M')
     stars = '★' * rate + '☆' * (5 - rate)
     footer = (version ? "for #{version} " : '') +"using #{device} on #{date}"
 
@@ -126,7 +125,6 @@ csv_file_names.each do |csv_file_name|
         text: row[:review_text],
         title: row[:review_title],
         submitted_at: row[:review_last_update_date_and_time],
-        edited: (row[:review_submit_date_and_time] != row[:review_last_update_date_and_time]),
         original_submitted_at: row[:review_submit_date_and_time],
         rate: row[:star_rating],
         device: device[row[:device]] ? device[row[:device]].downcase.tr('^a-z0-9', '').index(row[:device].downcase.tr('^a-z0-9', '')).nil? ? "#{device[row[:device]]} (#{row[:device]})" : device[row[:device]] : row[:device],
