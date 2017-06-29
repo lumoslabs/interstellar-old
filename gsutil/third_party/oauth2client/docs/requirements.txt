@@ -1,9 +1,0 @@
-django
-flask
-keyring
-pycrypto>=2.6
-pyopenssl>=0.14
-python-gflags
-pyyaml
-webapp2
-WebOb

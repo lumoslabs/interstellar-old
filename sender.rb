@@ -85,7 +85,7 @@ end
 
 def gsutil_sync(file_name, remote_path, local_path)
   # Only checks file sizes, not contents
-  gsutil = 'BOTO_PATH=./secrets/.boto gsutil/gsutil'
+  gsutil = 'BOTO_PATH=./secrets/.boto gsutil'
   remote = "#{remote_path}/#{file_name}"
   local = "#{local_path}/#{file_name}"
   system "#{gsutil} cp #{remote} #{local}" if !File.exist?(local) || File.stat(local).size != `#{gsutil} du #{remote}`.to_i
@@ -93,7 +93,6 @@ end
 
 start_date = [Time.at(File.exist?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - default_days_back + Rational(4, 24)].max
 
-system 'gsutil/gsutil update'
 gsutil_sync('supported_devices.csv', 'gs://play_public', '.')
 
 csv_file_names = []
