@@ -34,7 +34,7 @@ It is intended to be fired once a day via cron.
 
 2. configure [gsutil](https://github.com/GoogleCloudPlatform/gsutil/). It’s a python app from Google, instructions provided below.
 
-3. `gem install rest-client`
+3. `bundle install`
 
 ### Gsutil configuration
 1. Run `gsutil/gsutil config` and follow the steps.
