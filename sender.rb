@@ -3,6 +3,7 @@ require 'json'
 require 'date'
 require 'csv'
 require 'yaml'
+require 'enumerator'
 
 CONFIG = YAML.load_file('./secrets/secrets.yml')
 datefile = CONFIG['date_file'] || './lastdate'
@@ -15,6 +16,8 @@ class Slack
     },
     content_type: :json,
     accept: :json
+  rescue => e
+    puts e.response
   end
 end
 
@@ -30,15 +33,24 @@ class Review
 
     ratings_sum = @@ratings.reduce(:+)
     if ratings_sum > 0
+      # first message
       Slack.notify({
         text: [
           "#{ratings_sum} new Play Store #{ratings_sum == 1 ? 'rating' : 'ratings'}!",
           @@ratings.map.with_index{ |x, i| '★' * (i + 1) + '☆' * (4 - i) + " #{x}" }.reverse,
           "#{(@@ratings.map.with_index{ |x, i| x * (i + 1) }.reduce(:+).to_f / ratings_sum).round(3)} average rating\n",
           "#{messages.length} new Play Store #{messages.length == 1 ? 'review' : 'reviews'}!"
-        ].join("\n"),
-        attachments: messages
+        ].join("\n")
       })
+
+      # all the actual reviews
+      messages.each_slice(100) do |messages_chunk|
+        Slack.notify({
+          text: "",
+          attachments: messages_chunk
+        })
+      end
+
       IO.write(datefile, collection.max_by(&:submitted_at).submitted_at.to_time.to_i)
     else
       print "No new reviews\n"
