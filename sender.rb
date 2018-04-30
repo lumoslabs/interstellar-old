@@ -119,13 +119,17 @@ end
 
 device = Hash.new
 CSV.foreach('supported_devices.csv', :encoding => 'bom|utf-16le:utf-8', :headers => true, :header_converters => :symbol) do |row|
-  name = row[:marketing_name] || row[:model] || row[:device]
-  if device[row[:device]]
-    device[row[:device]] = "#{device[row[:device]]}/#{name}" if device[row[:device]].index(name).nil?
-  else
-    device[row[:device]] = !row[:retail_branding].nil? && name.downcase.tr('^a-z0-9', '').index(row[:retail_branding].downcase.tr('^a-z0-9', '')).nil? ? "#{row[:retail_branding]} #{name}" : name
+  begin
+    name = row[:marketing_name] || row[:model] || row[:device]
+    if device[row[:device]]
+      device[row[:device]] = "#{device[row[:device]]}/#{name}" if device[row[:device]].index(name).nil?
+    else
+      device[row[:device]] = !row[:retail_branding].nil? && name.downcase.tr('^a-z0-9', '').index(row[:retail_branding].downcase.tr('^a-z0-9', '')).nil? ? "#{row[:retail_branding]} #{name}" : name
+    end
+    device[row[:device]] = device[row[:device]].gsub('\t', '').gsub("\\'", "'").gsub('\\\\', '/').gsub(/(\\x[\da-f]{2}+)/) { [$1.tr('^0-9a-f','')].pack('H*').force_encoding('utf-8') }
+  rescue => e 
+    puts "error while parsing: #{e}"
   end
-  device[row[:device]] = device[row[:device]].gsub('\t', '').gsub("\\'", "'").gsub('\\\\', '/').gsub(/(\\x[\da-f]{2}+)/) { [$1.tr('^0-9a-f','')].pack('H*').force_encoding('utf-8') }
 end
 
 csv_file_names.each do |csv_file_name|
