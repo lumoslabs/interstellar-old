@@ -4,6 +4,7 @@ require 'date'
 require 'csv'
 require 'yaml'
 require 'enumerator'
+require "google/cloud/storage"
 
 CONFIG = YAML.load_file('./secrets/secrets.yml')
 datefile = CONFIG['date_file'] || './lastdate'
@@ -95,9 +96,8 @@ class Review
   end
 end
 
-def gsutil_sync(file_name, remote_path, local_path)
-  # Only checks file sizes, not contents
-  gsutil = 'BOTO_PATH=./secrets/.boto gsutil'
+def download_file(file_name, remote_path, local_path)
+  
   remote = "#{remote_path}/#{file_name}"
   local = "#{local_path}/#{file_name}"
   system "#{gsutil} cp #{remote} #{local}" if !File.exist?(local) || File.stat(local).size != `#{gsutil} du #{remote}`.to_i
@@ -105,14 +105,14 @@ end
 
 start_date = [Time.at(File.exist?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - default_days_back + Rational(4, 24)].max
 
-gsutil_sync('supported_devices.csv', 'gs://play_public', '.')
+download_file('supported_devices.csv', 'gs://play_public', '.')
 
 csv_file_names = []
 date = start_date
 while date <= Date.today
   file_date = date.strftime('%Y%m')
   csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
-  gsutil_sync(csv_file_name, "gs://#{CONFIG["app_repo"]}/reviews", '.')
+  download_file(csv_file_name, "gs://#{CONFIG["app_repo"]}/reviews", '.')
   csv_file_names.push(csv_file_name) if File.exist?(csv_file_name)
   date = date - date.day + 1 >> 1
 end
@@ -127,7 +127,7 @@ CSV.foreach('supported_devices.csv', :encoding => 'bom|utf-16le:utf-8', :headers
       device[row[:device]] = !row[:retail_branding].nil? && name.downcase.tr('^a-z0-9', '').index(row[:retail_branding].downcase.tr('^a-z0-9', '')).nil? ? "#{row[:retail_branding]} #{name}" : name
     end
     device[row[:device]] = device[row[:device]].gsub('\t', '').gsub("\\'", "'").gsub('\\\\', '/').gsub(/(\\x[\da-f]{2}+)/) { [$1.tr('^0-9a-f','')].pack('H*').force_encoding('utf-8') }
-  rescue => e 
+  rescue => e
     puts "error while parsing: #{e}"
   end
 end
