@@ -23,6 +23,11 @@ _Interstellar_ downloads reviews via google-provided [gsutil](https://cloud.goog
 
 It is intended to be fired once a day via cron.
 
+## ruby version
+Ruby 2.5 has a regression bug in CVS https://github.com/ruby/csv/issues/23
+
+use 2.4 until this is in stdlib
+
 ## Configuration
 
 1. create a file `secrets/secrets.yml`. There is an example in `secrets/secrets.yml.example`.
@@ -35,15 +40,6 @@ It is intended to be fired once a day via cron.
 2. configure [gsutil](https://github.com/GoogleCloudPlatform/gsutil/). It’s a python app from Google, instructions provided below.
 
 3. `bundle install`
-
-### Gsutil configuration
-1. Run `gsutil/gsutil config` and follow the steps.
-2. Once done, there will be a .boto file in your home dir.
-3. Copy this file to the ./secrets folder and you are good to go.
-
-You can always get the latest gsutil(https://cloud.google.com/storage/docs/gsutil_install) and change this line
-`system “BOTO_PATH=./secrets/.boto gsutil/gsutil cp -r gs://#{CONFIG[“app_repo”]}/reviews/#{csv_file_name} .”`
-to point it to whatever place you like. Keep in mind though, that the `sender.rb` script expects that the csv file is in the same folder.
 
 ## Usage
 Once configured - run `ruby sender.rb`

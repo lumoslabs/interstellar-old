@@ -4,7 +4,9 @@ require 'date'
 require 'csv'
 require 'yaml'
 require 'enumerator'
-require "google/cloud/storage"
+require 'google/cloud/storage'
+require 'open-uri'
+
 
 CONFIG = YAML.load_file('./secrets/secrets.yml')
 datefile = CONFIG['date_file'] || './lastdate'
@@ -97,28 +99,27 @@ class Review
 end
 
 def download_file(file_name, remote_path, local_path)
-  
   remote = "#{remote_path}/#{file_name}"
   local = "#{local_path}/#{file_name}"
   system "#{gsutil} cp #{remote} #{local}" if !File.exist?(local) || File.stat(local).size != `#{gsutil} du #{remote}`.to_i
 end
 
-start_date = [Time.at(File.exist?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - default_days_back + Rational(4, 24)].max
-
-download_file('supported_devices.csv', 'gs://play_public', '.')
-
-csv_file_names = []
-date = start_date
-while date <= Date.today
-  file_date = date.strftime('%Y%m')
-  csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
-  download_file(csv_file_name, "gs://#{CONFIG["app_repo"]}/reviews", '.')
-  csv_file_names.push(csv_file_name) if File.exist?(csv_file_name)
-  date = date - date.day + 1 >> 1
+def download_recent_files
+   storage = Google::Cloud::Storage.new(project_id: 'app-store-review-reader', credentials: 'secrets/app-store-review-reader-ea33b275a9e2.json')
+   bucket = storage.bucket('pubsite_prod_rev_00633631127834465669')
+   year_month = Date.today.strftime('%Y%m')
+   csv_file_name = "reviews_#{CONFIG["package_name"]}_#{year_month}.csv"
+   review_files = bucket.files prefix: "reviews/#{csv_file_name}"
+   review_files.each do |rf|
+     rf.download rf.name
+   end
+   review_files.map(&:name)
 end
 
 device = Hash.new
-CSV.foreach('supported_devices.csv', :encoding => 'bom|utf-16le:utf-8', :headers => true, :header_converters => :symbol) do |row|
+
+csv_text = open('http://storage.googleapis.com/play_public/supported_devices.csv')
+CSV.foreach(csv_text, :encoding => 'bom|utf-16le:utf-8', :headers => true, :header_converters => :symbol) do |row|
   begin
     name = row[:marketing_name] || row[:model] || row[:device]
     if device[row[:device]]
@@ -132,7 +133,10 @@ CSV.foreach('supported_devices.csv', :encoding => 'bom|utf-16le:utf-8', :headers
   end
 end
 
+csv_file_names = download_recent_files
 csv_file_names.each do |csv_file_name|
+  # ruby 2.5 can't parse with this file type
+  # https://github.com/ruby/csv/issues/23
   CSV.foreach(csv_file_name, :encoding => 'bom|utf-16le:utf-8', :headers => true, :header_converters => :symbol) do |row|
     # If there is no reply - push this review
     if row[:developer_reply_date_and_time].nil?
@@ -151,4 +155,5 @@ csv_file_names.each do |csv_file_name|
   end
 end
 
+start_date = [Time.at(File.exist?(datefile) ? IO.read(datefile).to_i : 0).to_datetime, Date.today.to_datetime - default_days_back + Rational(4, 24)].max
 Review.send_reviews_from_date(start_date, datefile)
