@@ -38,6 +38,11 @@ spec:
             - configMapRef:
                 name: interstellar-env
           env:
+            - name: STORAGE_KEYFILE_JSON
+              valueFrom:
+                configMapKeyRef:
+                  name: google-service-account
+                  key: interstellar-service-account
             - name: NAMESPACE
               valueFrom:
                 fieldRef:
