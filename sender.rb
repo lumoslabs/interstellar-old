@@ -2,19 +2,17 @@ require 'rest-client'
 require 'json'
 require 'date'
 require 'csv'
-require 'yaml'
 require 'enumerator'
 require 'google/cloud/storage'
 require 'open-uri'
+require 'dotenv/load'
 
-
-CONFIG = YAML.load_file('./secrets/secrets.yml')
-datefile = CONFIG['date_file'] || './lastdate'
-default_days_back = CONFIG['days_back'] || 7
+datefile = './lastdate'
+default_days_back = 2
 
 class Slack
   def self.notify(message)
-    RestClient.post CONFIG['slack_url'], {
+    RestClient.post ENV['SLACK_URL'], {
       payload: message.to_json
     },
     content_type: :json,
@@ -105,10 +103,11 @@ def download_file(file_name, remote_path, local_path)
 end
 
 def download_recent_files
-   storage = Google::Cloud::Storage.new(project_id: 'app-store-review-reader')
-   bucket = storage.bucket('pubsite_prod_rev_00633631127834465669')
+   # credentials and project are in ENV
+   storage = Google::Cloud::Storage.new
+   bucket = storage.bucket(ENV['APP_REPO'])
    year_month = Date.today.strftime('%Y%m')
-   csv_file_name = "reviews_#{CONFIG["package_name"]}_#{year_month}.csv"
+   csv_file_name = "reviews_#{ENV["PACKAGE_NAME"]}_#{year_month}.csv"
    review_files = bucket.files prefix: "reviews/#{csv_file_name}"
    review_files.each do |rf|
      rf.download rf.name

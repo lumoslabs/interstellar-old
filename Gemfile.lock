@@ -10,6 +10,7 @@ GEM
     digest-crc (0.4.1)
     domain_name (0.5.20180417)
       unf (>= 0.0.5, < 1.0.0)
+    dotenv (2.4.0)
     faraday (0.15.2)
       multipart-post (>= 1.2, < 3)
     google-api-client (0.19.8)
@@ -80,6 +81,7 @@ PLATFORMS
 
 DEPENDENCIES
   clockwork
+  dotenv
   google-cloud-storage
   rest-client
 
