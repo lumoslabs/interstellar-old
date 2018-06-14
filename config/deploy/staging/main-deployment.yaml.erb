@@ -9,9 +9,7 @@ spec:
   revisionHistoryLimit: 5
   minReadySeconds: 5
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
+    type: Recreate
   selector:
     matchLabels:
       app: interstellar
