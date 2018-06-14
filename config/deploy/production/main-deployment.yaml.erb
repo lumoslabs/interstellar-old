@@ -1,0 +1,61 @@
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: interstellar
+  labels:
+    app: interstellar
+    track: stable
+spec:
+  revisionHistoryLimit: 5
+  minReadySeconds: 5
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: interstellar
+      track: stable
+  template:
+    metadata:
+      labels:
+        app: interstellar
+        track: stable
+      annotations:
+        lumoslabs.com/deployment-id: "<%= deployment_id %>"
+    spec:
+      serviceAccountName: interstellar
+      imagePullSecrets:
+        - name: quay
+      volumes:
+        - name: profile
+          configMap:
+            name: interstellar-profile
+      containers:
+        - name: interstellar
+          image: quay.io/lumoslabs/interstellar:<%= current_sha.slice 0..7 %>
+          imagePullPolicy: IfNotPresent
+          args: ["/usr/src/app/script/kubernetes-start", "clock"]
+          envFrom:
+            - configMapRef:
+                name: interstellar-env
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: profile
+              mountPath: /etc/profile.d/lumos.sh
+              subPath: lumos.sh
+              readOnly: true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: interstellar-env
+  labels:
+    name: interstellar-env
+    app: interstellar
+data:
+  # will be replaced by memory dump

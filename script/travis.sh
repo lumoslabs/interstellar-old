@@ -6,16 +6,10 @@ set -ex
 echo $TRAVIS_COMMIT > REVISION
 
 if [ "${TRAVIS_JOB}" = "build" ]; then
+  # without caching. It doesn't save any time here, because this app is so simple
   docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD quay.io
-  if docker pull quay.io/$TRAVIS_REPO_SLUG:$TRAVIS_BRANCH
-  then
-    docker build --cache-from quay.io/$TRAVIS_REPO_SLUG:$TRAVIS_BRANCH -t quay.io/$TRAVIS_REPO_SLUG:$TRAVIS_BRANCH .
-  else
-    docker pull quay.io/$TRAVIS_REPO_SLUG:master
-    docker build --cache-from quay.io/$TRAVIS_REPO_SLUG:master -t quay.io/$TRAVIS_REPO_SLUG:$TRAVIS_BRANCH .
-  fi
+  docker build -t quay.io/$TRAVIS_REPO_SLUG:$TRAVIS_BRANCH .
   docker tag quay.io/$TRAVIS_REPO_SLUG:$TRAVIS_BRANCH quay.io/$TRAVIS_REPO_SLUG:${TRAVIS_COMMIT::8}
   docker tag quay.io/$TRAVIS_REPO_SLUG:${TRAVIS_COMMIT::8} quay.io/$TRAVIS_REPO_SLUG:travis-$TRAVIS_BUILD_NUMBER
   docker push quay.io/$TRAVIS_REPO_SLUG
-
 fi
