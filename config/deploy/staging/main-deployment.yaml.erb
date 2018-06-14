@@ -35,7 +35,7 @@ spec:
         - name: interstellar
           image: quay.io/lumoslabs/interstellar:<%= current_sha.slice 0..7 %>
           imagePullPolicy: IfNotPresent
-          args: ["/usr/src/app/script/kubernetes-start", "clock"]
+          args: ["/usr/src/app/script/kubernetes-start-clock"]
           envFrom:
             - configMapRef:
                 name: interstellar-env
