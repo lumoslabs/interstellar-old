@@ -13,4 +13,8 @@ if test -z "$ENVIRONMENT" ; then
 fi
 
 memory env dump -k "ConfigMap/$NAMESPACE/interstellar-env" "$ENVIRONMENT" interstellar "$PWD/config/deploy/$ENVIRONMENT/configmap.yaml"
+# we have to upload this as json, and memory dump flattens keys in a not-good-for-this way
+memory -q -f json show interstellar serviceaccount 2>/dev/null >/tmp/interstellar-service-account
+kubectl --context $ENVIRONMENT --namespace $NAMESPACE create configmap google-service-account --from-file /tmp/interstellar-service-account --dry-run -o yaml | kubectl --context $ENVIRONMENT --namespace $NAMESPACE apply -f -
+
 kubernetes-deploy --bindings=namespace=$NAMESPACE --no-prune "$NAMESPACE" "$CONTEXT"
