@@ -105,7 +105,7 @@ def download_file(file_name, remote_path, local_path)
 end
 
 def download_recent_files
-   storage = Google::Cloud::Storage.new(project_id: 'app-store-review-reader', credentials: 'secrets/app-store-review-reader-ea33b275a9e2.json')
+   storage = Google::Cloud::Storage.new(project_id: 'app-store-review-reader')
    bucket = storage.bucket('pubsite_prod_rev_00633631127834465669')
    year_month = Date.today.strftime('%Y%m')
    csv_file_name = "reviews_#{CONFIG["package_name"]}_#{year_month}.csv"
