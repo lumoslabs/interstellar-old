@@ -16,7 +16,7 @@ module Clockwork
   # comments for Pacific time clarity assume it is winter in California (PST)
   # 7:30am in PST
   # 86400 is 1 day in seconds
-  every(86400, 'send_reviews', at: '15:30', thread: true) do
+  every(86400, 'send_reviews', at: '17:10', thread: true) do
     system("ruby sender.rb")
   end
 end
